@@ -10,6 +10,7 @@
 struct disk_mgr {
 	struct ev_loop *loop;
 	ev_timer periodic_rescan_timer;
+	ev_timer tur_timer;
 	disk_t disk[MAX_DISKS];
 };
 static struct disk_mgr mgr;
@@ -66,6 +67,15 @@ static void rescan_cb(struct ev_loop *loop, ev_timer *watcher, int revents)
 	disk_manager_rescan();
 }
 
+static void tur_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
+{
+	int disk_idx;
+	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
+		if (mgr.disk[disk_idx].sg_path[0])
+			disk_tur(&mgr.disk[disk_idx]);
+	}
+}
+
 void disk_manager_init(struct ev_loop *loop)
 {
 	mgr.loop = loop;
@@ -74,4 +84,8 @@ void disk_manager_init(struct ev_loop *loop)
 	ev_timer *timer = &mgr.periodic_rescan_timer;
 	ev_timer_init(timer, rescan_cb, 0, 60*60);
 	ev_timer_start(loop, &mgr.periodic_rescan_timer);
+
+	timer = &mgr.tur_timer;
+	ev_timer_init(timer, tur_timer, 0.0, 1.0);
+	ev_timer_start(EV_DEFAULT, timer);
 }
