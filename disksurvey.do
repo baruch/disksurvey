@@ -1,4 +1,4 @@
-OBJS="src/main.o src/disk.o src/sg.o"
-LDFLAGS="-lev"
-redo-ifchange $OBJS
-gcc $LDFLAGS -o $3 $OBJS
+OBJS="src/main.o src/disk.o src/sg.o src/web.o src/disk_mgr.o"
+LDFLAGS="-L . -lebb -lev"
+redo-ifchange $OBJS libebb.a
+gcc -o $3 $OBJS $LDFLAGS 
