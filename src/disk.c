@@ -24,11 +24,21 @@ void disk_tur(disk_t *disk)
 	if (!disk->tur_request.in_progress) {
 		unsigned char cdb[6];
 		memset(cdb, 0, sizeof(cdb));
-		bool sent = sg_request(&disk->sg, &disk->tur_request, disk_reply, cdb, sizeof(cdb), SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
-		printf("request sent %d\n", sent);
+		bool alive = sg_request(&disk->sg, &disk->tur_request, disk_reply, cdb, sizeof(cdb), SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
+		printf("request sent, alive: %s\n", alive ? "yes" : "no");
+		if (!alive && disk->on_death) {
+			printf("Disk %p died\n", disk);
+			disk->on_death(disk);
+		}
 	} else {
 		printf("TUR request on the air still!\n");
 	}
+}
+
+void disk_cleanup(disk_t *disk)
+{
+	sg_close(&disk->sg, EV_DEFAULT);
+	memset(disk, 0, sizeof(*disk));
 }
 
 void disk_init(disk_t *disk, const char *dev)

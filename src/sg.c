@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <assert.h>
+#include <stdio.h>
+#include <errno.h>
 
 static void sg_cb(struct ev_loop *loop, ev_io *io, int revents);
 
@@ -52,13 +54,18 @@ bool sg_request(sg_t *sg, sg_request_t *req, sg_callback cb, unsigned char *cdb,
 	hdr.usr_ptr = req;
 
 	req->cb = cb;
-	req->in_progress = true;
 	ssize_t ret = write(sg->io.fd, &hdr, sizeof(hdr));
 	if (ret == sizeof(hdr)) {
+		req->in_progress = true;
 		req->start = ev_now(EV_DEFAULT);
 		return true;
 	} else {
-		req->in_progress = false;
+		if (errno == EWOULDBLOCK || errno == EAGAIN) {
+			printf("Failed to submit io, would block.\n");
+			return true;
+		} else {
+			printf("Failed to submit io: %m\n");
+		}
 		return false;
 	}
 }
@@ -67,6 +74,10 @@ static void sg_cb(struct ev_loop *loop, ev_io *io, int revents)
 {
 	sg_request_t *req;
 	sg_io_hdr_t hdr;
+
+	if (revents != EV_READ) {
+		printf("WARN: sg event %d\n", revents);
+	}
 
 	if (read(io->fd, &hdr, sizeof(hdr)) == sizeof(hdr)) {
 			req = (sg_request_t *)hdr.usr_ptr;

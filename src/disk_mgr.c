@@ -11,9 +11,41 @@ struct disk_mgr {
 	struct ev_loop *loop;
 	ev_timer periodic_rescan_timer;
 	ev_timer tur_timer;
+	ev_async cleanup_dead_disks;
 	disk_t disk[MAX_DISKS];
+	bool dead_disk[MAX_DISKS];
 };
 static struct disk_mgr mgr;
+
+static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int revents)
+{
+	printf("Cleanup dead disks started\n");
+	int disk_idx;
+	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
+		if (mgr.dead_disk[disk_idx]) {
+			mgr.dead_disk[disk_idx] = false;
+
+			disk_t *disk = &mgr.disk[disk_idx];
+			printf("Cleaning dead disk %p\n", disk);
+			disk_cleanup(disk);
+		}
+	}
+	printf("Cleanup dead disks finished\n");
+}
+
+static void on_death(disk_t *disk)
+{
+	int disk_idx;
+	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
+		disk_t *cur_disk = &mgr.disk[disk_idx];
+		if (cur_disk == disk) {
+			printf("Marking disk %p as dead for cleanup\n", disk);
+			mgr.dead_disk[disk_idx] = true;
+			break;
+		}
+	}
+	ev_async_send(mgr.loop, &mgr.cleanup_dead_disks);
+}
 
 void disk_manager_rescan(void)
 {
@@ -53,7 +85,9 @@ void disk_manager_rescan(void)
 		if (!found) {
 			if (first_free_disk != MAX_DISKS) {
 				printf("adding idx=%d!\n", first_free_disk);
-				disk_init(&mgr.disk[first_free_disk], dev);
+				disk_t *disk = &mgr.disk[first_free_disk];
+				disk_init(disk, dev);
+				disk->on_death = on_death;
 				first_free_disk = MAX_DISKS; // Spot not empty anymore
 			} else {
 				printf("Want to add but no space!\n");
@@ -78,6 +112,8 @@ static void tur_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
 
 void disk_manager_init(struct ev_loop *loop)
 {
+	memset(&mgr, 0, sizeof(mgr));
+
 	mgr.loop = loop;
 	
 	// The first event will be 0 seconds into the event loop and then once every hour
@@ -88,4 +124,8 @@ void disk_manager_init(struct ev_loop *loop)
 	timer = &mgr.tur_timer;
 	ev_timer_init(timer, tur_timer, 0.0, 1.0);
 	ev_timer_start(EV_DEFAULT, timer);
+
+	ev_async *async = &mgr.cleanup_dead_disks;
+	ev_async_init(async, cleanup_dead_disks);
+	ev_async_start(loop, async);
 }
