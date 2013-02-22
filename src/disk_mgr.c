@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MAX_DISKS 5
+#define MAX_DISKS 120
 
 struct disk_mgr {
 	struct ev_loop *loop;
