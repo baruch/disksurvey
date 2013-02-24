@@ -10,7 +10,6 @@ typedef struct disk_t {
 	char sg_path[32];
 	sg_t sg;
 	sg_request_t tur_request;
-	bool request_sent;
 	struct timespec last_ping_ts;
 	struct timespec last_reply;
 
