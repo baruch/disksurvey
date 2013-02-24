@@ -10,6 +10,19 @@
 
 #define DEF_TIMEOUT 30*1000
 
+int disk_json(disk_t *disk, char *buf, int len)
+{
+	int orig_len = len;
+
+	buf_add_char(buf, len, ' ');
+	buf_add_char(buf, len, '{');
+	buf_add_str(buf, len, " \"dev\": \"%s\" ", disk->sg_path);
+	buf_add_char(buf, len, '}');
+	buf_add_char(buf, len, ' ');
+
+	return orig_len - len;
+}
+
 static void disk_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
 				unsigned char msg_status, char sb_len_wr, short int host_status,
 				short int driver_status, int residual_len, int duration_msec, int info)

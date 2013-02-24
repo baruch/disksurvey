@@ -12,4 +12,22 @@
 
 #define ARRAY_SIZE(a)  ( sizeof(a) / sizeof(a[0]) )
 
+#define buf_add_char(_buf_, _len_, _ch_) \
+	do { \
+		if (_len_ < 1) return -1; \
+		_buf_[0] = _ch_; \
+		_buf_++; \
+		_len_--; \
+	} while (0)
+
+
+#define buf_add_str(_buf_, _len_, _fmt_...) \
+	do { \
+		int written = snprintf(_buf_, _len_, _fmt_); \
+		if (written < 0 || written >= _len_) \
+			return -1; \
+		_buf_ += written; \
+		_len_ -= written; \
+	} while (0)
+
 #endif

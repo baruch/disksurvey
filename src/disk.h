@@ -20,5 +20,6 @@ typedef struct disk_t {
 void disk_init(disk_t *disk, const char *dev);
 void disk_cleanup(disk_t *disk);
 void disk_tur(disk_t *disk);
+int disk_json(disk_t *disk, char *buf, int len);
 
 #endif

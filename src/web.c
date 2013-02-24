@@ -13,10 +13,8 @@
 #include <ev.h>
 #include "../libebb/ebb.h"
 
+#define CONNECTION_BUF_SIZE 128*1024
 static int c = 0;
-
-void hello_world(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query);
-void rescan_disks(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query);
 
 struct web {
 	ebb_server server;
@@ -27,10 +25,6 @@ struct url {
 	const char *path;
 	void (*cb)(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query);
 };
-static struct url urls[] = {
-	{"/", hello_world},
-	{"/rescan", rescan_disks},
-};
 
 struct request_data {
 	ebb_connection *connection;
@@ -39,14 +33,48 @@ struct request_data {
 	char query_string[256];
 };
 
-
-void hello_world(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query)
+static inline void serve_var(ebb_connection *connection, const char *content)
 {
-	static const char msg[] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\nhello world\n";
-	ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
+	ebb_connection_write(connection, content, strlen(content), ebb_connection_schedule_close);
 }
 
-void rescan_disks(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query)
+#define SERVE_VAR(name) static void serve_##name(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query) \
+{ \
+	serve_var(connection, name); \
+}
+
+SERVE_VAR(app_js)
+SERVE_VAR(app_css)
+SERVE_VAR(index_html)
+
+static char *connection_data(ebb_connection *connection)
+{
+	if (!connection->data) {
+		connection->data = malloc(CONNECTION_BUF_SIZE);
+		assert(connection->data);
+	}
+
+	return connection->data;
+}
+
+static void api_disk_list(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query)
+{
+	char *buf = connection_data(connection);
+	int hdr_len = snprintf(buf, CONNECTION_BUF_SIZE, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %-10d\r\n\r\n", 0);
+	int written = disk_manager_disk_list_json(buf + hdr_len, CONNECTION_BUF_SIZE - hdr_len);
+	if (written >= 0) {
+		char hdr[hdr_len+1];
+		snprintf(hdr, hdr_len+1, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %-10d\r\n\r\n", written-1);
+		memcpy(buf, hdr, hdr_len);
+		ebb_connection_write(connection, buf, hdr_len + written, ebb_connection_schedule_close);
+	} else {
+		printf("ERROR: space insufficient\n");
+		static const char msg[] = "HTTP/1.1 500 ERROR\r\n";
+		ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
+	}
+}
+
+static void rescan_disks(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query)
 {
 	static const char msg[] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nrescanned\n";
 	ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
@@ -80,6 +108,13 @@ static void request_query_string(ebb_request *request, const char *at, size_t le
 	data->query_string[sizeof(data->query_string)-1] = 0;
 }
 
+static struct url urls[] = {
+	{"/", serve_index_html},
+	{"/app.js", serve_app_js},
+	{"/app.css", serve_app_css},
+	{"/rescan", rescan_disks},
+	{"/api/disks", api_disk_list},
+};
 static void request_complete(ebb_request *request)
 {
 	struct request_data *data = request->data;
@@ -92,6 +127,7 @@ static void request_complete(ebb_request *request)
 	for (i = 0; i < ARRAY_SIZE(urls); i++) {
 		if (strcasecmp(urls[i].path, data->path) == 0) {
 			urls[i].cb(connection, request, data->path, data->uri, data->query_string);
+			printf("Request succeeded\n");
 			handled = true;
 			break;
 		}
@@ -99,6 +135,7 @@ static void request_complete(ebb_request *request)
 	if (!handled) {
 		static const char msg[] = "HTTP/1.1 404 NOT FOUND\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nnot found\n";
 		ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
+		printf("Request not found\n");
 	}
 
 	free(request->data);

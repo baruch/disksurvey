@@ -1,5 +1,6 @@
 #include "disk_mgr.h"
 #include "disk.h"
+#include "util.h"
 
 #include <glob.h>
 #include <stdio.h>
@@ -16,6 +17,38 @@ struct disk_mgr {
 	bool dead_disk[MAX_DISKS];
 };
 static struct disk_mgr mgr;
+
+int disk_manager_disk_list_json(char *buf, int len)
+{
+	int orig_len = len;
+	int disk_idx;
+	bool first = true;
+
+	buf_add_char(buf, len, '[');
+
+	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
+		if (mgr.disk[disk_idx].sg_path[0] == 0)
+			continue;
+
+		if (!first)
+			buf_add_char(buf, len, ',');
+		else
+			first = false;
+
+		int written = disk_json(&mgr.disk[disk_idx], buf, len);
+		if (written < 0)
+			return -1;
+
+		buf += written;
+		len -= written;
+	}
+
+	buf_add_char(buf, len, ']');
+	buf_add_char(buf, len, 0);
+
+	// Return number of stored characters
+	return orig_len - len;
+}
 
 static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int revents)
 {
