@@ -7,4 +7,5 @@ libebb.a
 src/web_app.c
 web/app.inc
 web/app.js
+web/app.css
 web/coffee.js

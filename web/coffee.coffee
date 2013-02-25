@@ -31,12 +31,13 @@ $(document).ready ->
 
   window.Disks = new DiskList
 
-  class DiskView extends Backbone.View
-    tagName: 'li'
-
-    render: ->
-      content = @model.get('dev')
-      $(@el).html(content)
-      @el
+  columns = [
+    { name: "dev", label: "Device", cell: "string", editable: false },
+    { name: "vendor", label: "Vendor", cell: "string", editable: false },
+    { name: "model", label: "Model", cell: "string", editable: false },
+    { name: "serial", label: "Serial", cell: "string", editable: false },
+  ]
+  window.Grid = new Backgrid.Grid { columns: columns, collection: window.Disks }
+  $('#content').append(window.Grid.render().$el);
 
   App = new AppView(el: $('#content'))
