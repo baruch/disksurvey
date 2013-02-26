@@ -2,6 +2,8 @@
 #include "util.h"
 
 #include "scsicmd.h"
+#include "ata.h"
+#include "ata_parse.h"
 
 #include <scsi/sg.h>
 #include <sys/types.h>
@@ -82,6 +84,12 @@ static void disk_inquiry_reply(sg_request_t *req, unsigned char status, unsigned
 	parse_inquiry(disk->data_buf, sizeof(disk->data_buf) - residual_len, &disk->device_type, disk->vendor,
 	              disk->model, disk->fw_rev, disk->serial);
 
+	if (strcmp(disk->vendor, "ATA     ") == 0) {
+		// Disk is an ATA Disk, need to use ATA INQUIRY to get the real details
+		printf("ATA disk needs to be ATA IDENTIFYied\n");
+		disk->pending_ata_identify = 1;
+	}
+
 	disk_state_machine_step(disk);
 }
 
@@ -100,10 +108,64 @@ void disk_inquiry(disk_t *disk)
 	printf("Inquiry request sent, alive: %s\n", alive ? "yes" : "no");
 }
 
+static void disk_ata_identify_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
+				unsigned char msg_status, char sb_len_wr, short int host_status,
+				short int driver_status, int residual_len, int duration_msec, int info)
+{
+	disk_t *disk = container_of(req, disk_t, data_request);
+	printf("Got ATA IDENTIFY reply in %f msecs (%d in sg)\n", 1000.0*(req->end-req->start), duration_msec);
+
+	if (status != 0) {
+		printf("ATA IDENTIFY failed, status=%d!\n", status);
+		disk_state_machine_step(disk);
+		return;
+	}
+
+	char ata_model[(46 - 27 + 1)*2 + 1] = "";
+
+	ata_get_ata_identify_model(disk->data_buf, ata_model);
+
+	char *vendor = strtok(ata_model, " ");
+	strncpy(disk->vendor, vendor, sizeof(disk->vendor));
+
+	char *model = strtok(NULL, " ");
+	strncpy(disk->model, model, sizeof(disk->model));
+
+	ata_get_ata_identify_serial_number(disk->data_buf, disk->serial);
+	ata_get_ata_identify_fw_rev(disk->data_buf, disk->fw_rev);
+	printf("ATA model: %s:%s\n", model, vendor);
+
+	disk_state_machine_step(disk);
+}
+
+void disk_ata_identify(disk_t *disk)
+{
+	if (disk->data_request.in_progress) {
+		disk->pending_ata_identify = 1;
+		return;
+	}
+
+	disk->pending_ata_identify = 0;
+
+	unsigned char cdb[12];
+	int cdb_len = 12;
+	memset(cdb, 0, sizeof(cdb));
+	cdb[0] = 0xA1;
+	cdb[1] = 0x4<<1;
+	cdb[2] = ata_passthrough_flags_2(0, 0, 1, 1, ATA_PT_LEN_SPEC_SECTOR_COUNT);
+	cdb[4] = 1;
+	cdb[9] = 0xEC;
+	bool alive = sg_request_data(disk, disk_ata_identify_reply, cdb, cdb_len);
+	printf("ATA identify request sent, alive: %s\n", alive? "yes" : "no");
+
+}
+
 static void disk_state_machine_step(disk_t *disk)
 {
 	if (disk->pending_inquiry)
 		disk_inquiry(disk);
+	else if (disk->pending_ata_identify)
+		disk_ata_identify(disk);
 }
 
 void disk_cleanup(disk_t *disk)

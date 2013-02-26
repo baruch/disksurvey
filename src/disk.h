@@ -14,9 +14,10 @@ typedef struct disk_t {
 	sg_request_t tur_request;
 
 	sg_request_t data_request;
-	unsigned char data_buf[4096];
+	char data_buf[4096];
 
 	unsigned pending_inquiry : 1;
+	unsigned pending_ata_identify : 1;
 
 	int device_type;
 	scsi_vendor_t vendor;
