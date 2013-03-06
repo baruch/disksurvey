@@ -27,6 +27,14 @@ int disk_json(disk_t *disk, char *buf, int len)
 	buf_add_str(buf, len, ", \"model\": \"%s\"", disk->model);
 	buf_add_str(buf, len, ", \"serial\": \"%s\"", disk->serial);
 	buf_add_str(buf, len, ", \"fw_rev\": \"%s\"", disk->fw_rev);
+
+	struct latency_summary *entry = &disk->latency.entries[disk->latency.cur_entry];
+
+	double *top_latencies = entry->top_latencies;
+	buf_add_str(buf, len, ", \"last_top_latency\": [%g,%g,%g,%g,%g]", top_latencies[0], top_latencies[1], top_latencies[2], top_latencies[3], top_latencies[4]);
+
+	buf_add_str(buf, len, ", \"last_histogram\": [%u,%u,%u,%u,%u,%u,%u]", entry->hist[0], entry->hist[1], entry->hist[2], entry->hist[3], entry->hist[4], entry->hist[5], entry->hist[6]);
+
 	buf_add_char(buf, len, '}');
 	buf_add_char(buf, len, ' ');
 
@@ -43,13 +51,17 @@ static inline bool sg_request_data(disk_t *disk, sg_callback cb, unsigned char *
 	return alive;
 }
 
-static void disk_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
+static void disk_tur_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
 				unsigned char msg_status, char sb_len_wr, short int host_status,
 				short int driver_status, int residual_len, int duration_msec, int info)
 {
-	//disk_t *disk = container_of(req, disk_t, tur_request);
+	disk_t *disk = container_of(req, disk_t, tur_request);
+	double latency = req->end - req->start;
 
-	printf("Got reply in %f msecs (%d in sg)\n", 1000.0*(req->end-req->start), duration_msec);
+	printf("Got reply in %f msecs (%d in sg)\n", 1000.0*latency, duration_msec);
+	disk->last_reply_ts = req->end;
+
+	latency_add_sample(&disk->latency, latency*1000.0);
 }
 
 void disk_tur(disk_t *disk)
@@ -57,11 +69,13 @@ void disk_tur(disk_t *disk)
 	if (!disk->tur_request.in_progress) {
 		unsigned char cdb[6];
 		memset(cdb, 0, sizeof(cdb));
-		bool alive = sg_request(&disk->sg, &disk->tur_request, disk_reply, cdb, sizeof(cdb), SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
+		bool alive = sg_request(&disk->sg, &disk->tur_request, disk_tur_reply, cdb, sizeof(cdb), SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
 		printf("request sent, alive: %s\n", alive ? "yes" : "no");
 		if (!alive && disk->on_death) {
 			printf("Disk %p died\n", disk);
 			disk->on_death(disk);
+		} else {
+			disk->last_ping_ts = disk->tur_request.start;
 		}
 	} else {
 		printf("TUR request on the air still!\n");
@@ -166,6 +180,11 @@ static void disk_state_machine_step(disk_t *disk)
 		disk_inquiry(disk);
 	else if (disk->pending_ata_identify)
 		disk_ata_identify(disk);
+}
+
+void disk_tick(disk_t *disk)
+{
+	latency_tick(&disk->latency);
 }
 
 void disk_cleanup(disk_t *disk)

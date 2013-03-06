@@ -12,6 +12,7 @@ struct disk_mgr {
 	struct ev_loop *loop;
 	ev_timer periodic_rescan_timer;
 	ev_timer tur_timer;
+	ev_timer five_min_timer;
 	ev_async cleanup_dead_disks;
 	disk_t disk[MAX_DISKS];
 	bool dead_disk[MAX_DISKS];
@@ -143,6 +144,15 @@ static void tur_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
 	}
 }
 
+static void five_min_tick_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
+{
+	int disk_idx;
+	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
+		if (mgr.disk[disk_idx].sg_path[0])
+			disk_tick(&mgr.disk[disk_idx]);
+	}
+}
+
 void disk_manager_init(struct ev_loop *loop)
 {
 	memset(&mgr, 0, sizeof(mgr));
@@ -156,7 +166,11 @@ void disk_manager_init(struct ev_loop *loop)
 
 	timer = &mgr.tur_timer;
 	ev_timer_init(timer, tur_timer, 0.0, 1.0);
-	ev_timer_start(EV_DEFAULT, timer);
+	ev_timer_start(loop, timer);
+
+	timer = &mgr.five_min_timer;
+	ev_timer_init(timer, five_min_tick_timer, 5.0*60.0, 5.0*60.0);
+	ev_timer_start(loop, timer);
 
 	ev_async *async = &mgr.cleanup_dead_disks;
 	ev_async_init(async, cleanup_dead_disks);
