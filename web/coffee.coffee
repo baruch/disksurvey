@@ -39,16 +39,16 @@ $(document).ready ->
     true
   , 10000
 
-  class SparklineCell extends Backgrid.Cell
-    className: 'sparkline-cell'
+  class SparklineLatencyCell extends Backgrid.Cell
+    className: 'sparkline-latency-cell'
 
     render: ->
       this.$el.empty()
       value = this.model.get(this.column.get("name"))
-      console.log value
       opts =
         type: 'bar'
         chartRangeMin: 0
+        chartRangeMax: 20
         colorMap:
           '0:0.5': 'blue'
           '0.5:3': 'pink'
@@ -62,14 +62,34 @@ $(document).ready ->
       true
 
       return this
- 
+
+  class SparklineHistogramCell extends Backgrid.Cell
+    className: 'sparkline-histogram-cell'
+
+    render: ->
+      this.$el.empty()
+      value = this.model.get(this.column.get("name"))
+      opts =
+        type: 'bar'
+        chartRangeMin: 0
+
+      this.$el.sparkline value, opts
+      setInterval => 
+        $.sparkline_display_visible()
+        true
+      , 100
+      true
+
+      return this
+
 
   columns = [
     { name: "dev", label: "Device", cell: "string", editable: false },
     { name: "vendor", label: "Vendor", cell: "string", editable: false },
     { name: "model", label: "Model", cell: "string", editable: false },
     { name: "serial", label: "Serial", cell: "string", editable: false },
-    { name: "last_top_latency", label: "Graph", cell: SparklineCell, editable: false },
+    { name: "last_top_latency", label: "Latency", cell: SparklineLatencyCell, editable: false },
+    { name: "last_histogram", label: "Histogram", cell: SparklineHistogramCell, editable: false },
   ]
 
   window.Grid = new Backgrid.Grid { columns: columns, collection: window.Disks }
