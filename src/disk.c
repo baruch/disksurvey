@@ -190,7 +190,7 @@ void disk_tick(disk_t *disk)
 void disk_cleanup(disk_t *disk)
 {
 	sg_close(&disk->sg, EV_DEFAULT);
-	memset(disk, 0, sizeof(*disk));
+	memset(disk->sg_path, 0, sizeof(disk->sg_path));
 }
 
 void disk_init(disk_t *disk, const char *dev)

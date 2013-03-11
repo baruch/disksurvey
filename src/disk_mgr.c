@@ -5,8 +5,16 @@
 #include <glob.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #define MAX_DISKS 120
+
+struct disk_state {
+	int prev;
+	int next;
+	bool died;
+	disk_t disk;
+};
 
 struct disk_mgr {
 	struct ev_loop *loop;
@@ -14,10 +22,65 @@ struct disk_mgr {
 	ev_timer tur_timer;
 	ev_timer five_min_timer;
 	ev_async cleanup_dead_disks;
-	disk_t disk[MAX_DISKS];
-	bool dead_disk[MAX_DISKS];
+
+	int alive_head;
+	int dead_head;
+	int first_unused_entry;
+	struct disk_state disk_list[MAX_DISKS];
 };
 static struct disk_mgr mgr;
+
+#define for_active_disks(_idx_) \
+	for (_idx_ = mgr.alive_head; _idx_ != -1; _idx_ = mgr.disk_list[_idx_].next)
+
+static void disk_list_remove(int idx, int *old_head)
+{
+	assert(idx != -1);
+
+	struct disk_state *entry = &mgr.disk_list[idx];
+
+	if (entry->prev != -1)
+		mgr.disk_list[entry->prev].next = entry->next;
+	else
+		*old_head = entry->next;
+
+	if (entry->next != -1)
+		mgr.disk_list[entry->next].prev = entry->prev;
+
+	entry->prev = entry->next = -1;
+}
+
+static void disk_list_append(int idx, int *new_head)
+{
+	assert(idx != -1);
+
+	// Go to the end of the list starting with new_head
+	int *disk_idx_ptr = new_head;
+	int prev_disk_idx = -1;
+	while (*disk_idx_ptr != -1) {
+		prev_disk_idx = *disk_idx_ptr;
+		disk_idx_ptr = &mgr.disk_list[*disk_idx_ptr].next;
+	}
+
+	// Add to the end of the list
+	struct disk_state *entry = &mgr.disk_list[idx];
+	entry->prev = prev_disk_idx;
+	entry->next = -1;
+	*disk_idx_ptr = idx;
+}
+
+static int disk_list_get_unused(void)
+{
+	if (mgr.first_unused_entry < ARRAY_SIZE(mgr.disk_list)) {
+		return mgr.first_unused_entry++;
+	}
+
+	// No more never used entries, recycle old ones
+	int idx = mgr.dead_head;
+	if (idx != -1)
+		disk_list_remove(idx, &mgr.dead_head);
+	return idx;
+}
 
 int disk_manager_disk_list_json(char *buf, int len)
 {
@@ -27,16 +90,14 @@ int disk_manager_disk_list_json(char *buf, int len)
 
 	buf_add_char(buf, len, '[');
 
-	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
-		if (mgr.disk[disk_idx].sg_path[0] == 0)
-			continue;
-
+	// TODO: Handle dead disks
+	for_active_disks(disk_idx) {
 		if (!first)
 			buf_add_char(buf, len, ',');
 		else
 			first = false;
 
-		int written = disk_json(&mgr.disk[disk_idx], buf, len);
+		int written = disk_json(&mgr.disk_list[disk_idx].disk, buf, len);
 		if (written < 0)
 			return -1;
 
@@ -55,11 +116,16 @@ static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int reve
 {
 	printf("Cleanup dead disks started\n");
 	int disk_idx;
-	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
-		if (mgr.dead_disk[disk_idx]) {
-			mgr.dead_disk[disk_idx] = false;
 
-			disk_t *disk = &mgr.disk[disk_idx];
+	for_active_disks(disk_idx) {
+		if (mgr.disk_list[disk_idx].died) {
+			mgr.disk_list[disk_idx].died = false;
+
+			disk_list_remove(disk_idx, &mgr.alive_head);
+			disk_list_append(disk_idx, &mgr.dead_head);
+
+			// TODO: When cleaning a dead disk, keep the useful info in it for a while, it may yet return
+			disk_t *disk = &mgr.disk_list[disk_idx].disk;
 			printf("Cleaning dead disk %p\n", disk);
 			disk_cleanup(disk);
 		}
@@ -69,15 +135,9 @@ static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int reve
 
 static void on_death(disk_t *disk)
 {
-	int disk_idx;
-	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
-		disk_t *cur_disk = &mgr.disk[disk_idx];
-		if (cur_disk == disk) {
-			printf("Marking disk %p as dead for cleanup\n", disk);
-			mgr.dead_disk[disk_idx] = true;
-			break;
-		}
-	}
+	struct disk_state *state = container_of(disk, struct disk_state, disk);
+	state->died = true;
+	printf("Marking disk %p as dead for cleanup\n", disk);
 	ev_async_send(mgr.loop, &mgr.cleanup_dead_disks);
 }
 
@@ -97,7 +157,6 @@ void disk_manager_rescan(void)
 	printf("Found %d devices\n", globbuf.gl_pathc);
 
 	int glob_idx;
-	int first_free_disk = MAX_DISKS;
 
 	for (glob_idx = 0; glob_idx < globbuf.gl_pathc; glob_idx++) {
 		char *dev = globbuf.gl_pathv[glob_idx];
@@ -105,24 +164,23 @@ void disk_manager_rescan(void)
 		printf("\tDevice: %s - ", dev);
 
 		int disk_idx;
-		for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
-			char *sg_path = mgr.disk[disk_idx].sg_path;
+		for_active_disks(disk_idx) {
+			char *sg_path = mgr.disk_list[disk_idx].disk.sg_path;
 			if (strcmp(dev, sg_path) == 0) {
 				printf("already known\n");
 				found = true;
 				break;
-			} else if (first_free_disk == MAX_DISKS && sg_path[0] == '\0') {
-				first_free_disk = disk_idx;
 			}
 		}
 
 		if (!found) {
-			if (first_free_disk != MAX_DISKS) {
-				printf("adding idx=%d!\n", first_free_disk);
-				disk_t *disk = &mgr.disk[first_free_disk];
+			int new_disk_idx = disk_list_get_unused();
+			if (new_disk_idx != -1) {
+				printf("adding idx=%d!\n", new_disk_idx);
+				disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
 				disk_init(disk, dev);
 				disk->on_death = on_death;
-				first_free_disk = MAX_DISKS; // Spot not empty anymore
+				disk_list_append(new_disk_idx, &mgr.alive_head);
 			} else {
 				printf("Want to add but no space!\n");
 			}
@@ -138,24 +196,32 @@ static void rescan_cb(struct ev_loop *loop, ev_timer *watcher, int revents)
 static void tur_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
 {
 	int disk_idx;
-	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
-		if (mgr.disk[disk_idx].sg_path[0])
-			disk_tur(&mgr.disk[disk_idx]);
+	for_active_disks(disk_idx) {
+		disk_tur(&mgr.disk_list[disk_idx].disk);
 	}
 }
 
 static void five_min_tick_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
 {
 	int disk_idx;
-	for (disk_idx = 0; disk_idx < MAX_DISKS; disk_idx++) {
-		if (mgr.disk[disk_idx].sg_path[0])
-			disk_tick(&mgr.disk[disk_idx]);
+	for_active_disks(disk_idx) {
+		disk_tick(&mgr.disk_list[disk_idx].disk);
 	}
+}
+
+static void disk_manager_init_mgr(void)
+{
+	// Initialize the disk list
+	mgr.first_unused_entry = 0;
+
+	// Initialize the heads
+	mgr.alive_head = -1;
+	mgr.dead_head = -1;
 }
 
 void disk_manager_init(struct ev_loop *loop)
 {
-	memset(&mgr, 0, sizeof(mgr));
+	disk_manager_init_mgr();
 
 	mgr.loop = loop;
 	
