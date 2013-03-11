@@ -32,7 +32,7 @@ static void update_histogram(struct latency_summary *entry, double val)
 
     for (i = 0; i < ARRAY_SIZE(histogram_boundary); i++)
     {
-        if (val <= histogram_boundary[i]) {
+        if (val <= histogram_boundary[i]*1000.0) {
             entry->hist[i]++;
             return;
         }
