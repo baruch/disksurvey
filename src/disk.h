@@ -23,6 +23,7 @@ typedef struct disk_t {
 	scsi_model_t model;
 	scsi_fw_revision_t fw_rev;
 	scsi_serial_t serial;
+	bool ata_smart_supported;
 
 	ev_tstamp last_ping_ts;
 	ev_tstamp last_reply_ts;

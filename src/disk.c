@@ -16,6 +16,11 @@
 
 static void disk_state_machine_step(disk_t *disk);
 
+inline const char *json_bool(bool is_true)
+{
+	return is_true ? "true" : "false";
+}
+
 int disk_json(disk_t *disk, char *buf, int len)
 {
 	int orig_len = len;
@@ -27,6 +32,7 @@ int disk_json(disk_t *disk, char *buf, int len)
 	buf_add_str(buf, len, ", \"model\": \"%s\"", disk->model);
 	buf_add_str(buf, len, ", \"serial\": \"%s\"", disk->serial);
 	buf_add_str(buf, len, ", \"fw_rev\": \"%s\"", disk->fw_rev);
+	buf_add_str(buf, len, ", \"ata_smart_supported\": %s", json_bool(disk->ata_smart_supported));
 
 	struct latency_summary *entry = &disk->latency.entries[disk->latency.cur_entry];
 
@@ -148,6 +154,7 @@ static void disk_ata_identify_reply(sg_request_t *req, unsigned char status, uns
 	ata_get_ata_identify_serial_number(disk->data_buf, disk->serial);
 	ata_get_ata_identify_fw_rev(disk->data_buf, disk->fw_rev);
 	printf("ATA model: %s:%s\n", model, vendor);
+	disk->ata_smart_supported = ata_get_ata_identify_smart_supported(disk->data_buf);
 
 	disk_state_machine_step(disk);
 }
@@ -161,14 +168,8 @@ void disk_ata_identify(disk_t *disk)
 
 	disk->pending_ata_identify = 0;
 
-	unsigned char cdb[12];
-	int cdb_len = 12;
-	memset(cdb, 0, sizeof(cdb));
-	cdb[0] = 0xA1;
-	cdb[1] = 0x4<<1;
-	cdb[2] = ata_passthrough_flags_2(0, 0, 1, 1, ATA_PT_LEN_SPEC_SECTOR_COUNT);
-	cdb[4] = 1;
-	cdb[9] = 0xEC;
+	unsigned char cdb[32];
+	int cdb_len = cdb_ata_identify(cdb);
 	bool alive = sg_request_data(disk, disk_ata_identify_reply, cdb, cdb_len);
 	printf("ATA identify request sent, alive: %s\n", alive? "yes" : "no");
 
