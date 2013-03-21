@@ -4,6 +4,7 @@
 #include "sg.h"
 #include "scsicmd.h"
 #include "latency.h"
+#include "util.h"
 
 #include <time.h>
 #include <ev.h>
@@ -17,6 +18,10 @@ typedef struct disk_t {
 
 	unsigned pending_inquiry : 1;
 	unsigned pending_ata_identify : 1;
+	unsigned pending_sata_smart_result : 1;
+
+	tribool is_ata;
+	tribool sata_smart_ok;
 
 	int device_type;
 	scsi_vendor_t vendor;
@@ -27,6 +32,7 @@ typedef struct disk_t {
 
 	ev_tstamp last_ping_ts;
 	ev_tstamp last_reply_ts;
+	ev_tstamp last_monitor_ts;
 
 	void (*on_death)(struct disk_t *disk);
 

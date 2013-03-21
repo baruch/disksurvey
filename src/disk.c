@@ -13,8 +13,20 @@
 #include <memory.h>
 
 #define DEF_TIMEOUT 30*1000
+#define MONITOR_INTERVAL_SEC 3600
 
 static void disk_state_machine_step(disk_t *disk);
+static void disk_monitor(disk_t *disk);
+
+inline const char *json_tribool(tribool state)
+{
+	if (state == TRIBOOL_TRUE)
+		return "true";
+	if (state == TRIBOOL_FALSE)
+		return "false";
+	else
+		return "unknown";
+}
 
 inline const char *json_bool(bool is_true)
 {
@@ -32,7 +44,9 @@ int disk_json(disk_t *disk, char *buf, int len)
 	buf_add_str(buf, len, ", \"model\": \"%s\"", disk->model);
 	buf_add_str(buf, len, ", \"serial\": \"%s\"", disk->serial);
 	buf_add_str(buf, len, ", \"fw_rev\": \"%s\"", disk->fw_rev);
+	buf_add_str(buf, len, ", \"is_ata\": \"%s\"", json_tribool(disk->is_ata));
 	buf_add_str(buf, len, ", \"ata_smart_supported\": %s", json_bool(disk->ata_smart_supported));
+	buf_add_str(buf, len, ", \"sata_smart_ok\": \"%s\"", json_tribool(disk->sata_smart_ok));
 
 	struct latency_summary *entry = &disk->latency.entries[disk->latency.cur_entry];
 
@@ -108,7 +122,11 @@ static void disk_inquiry_reply(sg_request_t *req, unsigned char status, unsigned
 		// Disk is an ATA Disk, need to use ATA INQUIRY to get the real details
 		printf("ATA disk needs to be ATA IDENTIFYied\n");
 		disk->pending_ata_identify = 1;
+		disk->is_ata = TRIBOOL_TRUE;
+	} else {
+		disk->is_ata = TRIBOOL_FALSE;
 	}
+	disk_monitor(disk);
 
 	disk_state_machine_step(disk);
 }
@@ -172,20 +190,84 @@ void disk_ata_identify(disk_t *disk)
 	int cdb_len = cdb_ata_identify(cdb);
 	bool alive = sg_request_data(disk, disk_ata_identify_reply, cdb, cdb_len);
 	printf("ATA identify request sent, alive: %s\n", alive? "yes" : "no");
+}
 
+
+static void disk_ata_smart_result_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
+				unsigned char msg_status, char sb_len_wr, short int host_status,
+				short int driver_status, int residual_len, int duration_msec, int info)
+{
+	disk_t *disk = container_of(req, disk_t, data_request);
+	printf("Got ATA SMART RETURN RESULT reply in %f msecs (%d in sg)\n", 1000.0*(req->end-req->start), duration_msec);
+
+	if (status == 0) {
+		printf("ATA SMART RETURN RESULT succeeded but we expected it to always fail!\n");
+		disk_state_machine_step(disk);
+		return;
+	}
+
+	bool smart_ok;
+	bool parsed = ata_smart_return_status_result(req->sense, sb_len_wr, &smart_ok);
+		printf("parsing of smart return: %d\n", parsed);
+	if (parsed) {
+		disk->sata_smart_ok = smart_ok ? TRIBOOL_TRUE : TRIBOOL_FALSE;
+	}
+
+	disk_state_machine_step(disk);
+}
+
+static void disk_ata_smart_result(disk_t *disk)
+{
+	if (disk->data_request.in_progress) {
+		disk->pending_sata_smart_result = 1;
+		return;
+	}
+
+	disk->pending_sata_smart_result = 0;
+
+	unsigned char cdb[32];
+	int cdb_len = cdb_ata_smart_return_status(cdb);
+	bool alive = sg_request_data(disk, disk_ata_smart_result_reply, cdb, cdb_len);
+	printf("ATA SMART RETURN RESULT request sent, alive: %s\n", alive? "yes" : "no");
+	
 }
 
 static void disk_state_machine_step(disk_t *disk)
 {
+	if (disk->data_request.in_progress)
+		return;
+
 	if (disk->pending_inquiry)
 		disk_inquiry(disk);
 	else if (disk->pending_ata_identify)
 		disk_ata_identify(disk);
+	else if (disk->pending_sata_smart_result)
+		disk_ata_smart_result(disk);
+}
+
+static void disk_monitor(disk_t *disk)
+{
+	ev_tstamp now = ev_now(EV_DEFAULT);
+
+	printf("checking for monitoring last_monitor=%f now=%f\n", disk->last_monitor_ts, now);
+	if (disk->last_monitor_ts + MONITOR_INTERVAL_SEC < now) {
+		printf("Monitor initiated\n");
+		disk->last_monitor_ts = now;
+		if (disk->is_ata == TRIBOOL_TRUE) {
+			disk_ata_smart_result(disk);
+			//TODO: disk_ata_smart_attributes(disk);
+		} else {
+			//TODO: disk_informational_exception(disk);
+		}
+	} else {
+		printf("Monitor skipped\n");
+	}
 }
 
 void disk_tick(disk_t *disk)
 {
 	latency_tick(&disk->latency);
+	disk_monitor(disk);
 }
 
 void disk_cleanup(disk_t *disk)

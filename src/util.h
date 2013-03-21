@@ -3,6 +3,12 @@
 
 #include <stddef.h>
 
+typedef enum tribool {
+	TRIBOOL_UNKNOWN,
+	TRIBOOL_TRUE,
+	TRIBOOL_FALSE
+} tribool;
+
 #define container_of(ptr, type, member) ({ \
                 const typeof( ((type *)0)->member ) *__mptr = (ptr); \
                 (type *)( (char *)__mptr - offsetof(type,member) );})
