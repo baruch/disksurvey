@@ -1,0 +1,13 @@
+disk_info:
+    sata_smart_ok: tribool
+    device_type: int
+    vendor:
+        string: 64
+    model:
+        string: 64
+    fw_rev:
+        string: 64
+    serial:
+        string: 64
+    ata_smart_supported: bool
+

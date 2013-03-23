@@ -5,6 +5,7 @@
 #include "scsicmd.h"
 #include "latency.h"
 #include "util.h"
+#include "../src/disk_def.h"
 
 #include <time.h>
 #include <ev.h>
@@ -21,14 +22,6 @@ typedef struct disk_t {
 	unsigned pending_sata_smart_result : 1;
 
 	tribool is_ata;
-	tribool sata_smart_ok;
-
-	int device_type;
-	scsi_vendor_t vendor;
-	scsi_model_t model;
-	scsi_fw_revision_t fw_rev;
-	scsi_serial_t serial;
-	bool ata_smart_supported;
 
 	ev_tstamp last_ping_ts;
 	ev_tstamp last_reply_ts;
@@ -37,6 +30,7 @@ typedef struct disk_t {
 	void (*on_death)(struct disk_t *disk);
 
 	char data_buf[4096] __attribute__(( aligned(4096) ));
+	disk_info_t disk_info;
 	latency_t latency;
 
 } disk_t;

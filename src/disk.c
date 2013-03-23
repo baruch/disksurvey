@@ -40,13 +40,13 @@ int disk_json(disk_t *disk, char *buf, int len)
 	buf_add_char(buf, len, ' ');
 	buf_add_char(buf, len, '{');
 	buf_add_str(buf, len, " \"dev\": \"%s\" ", disk->sg_path);
-	buf_add_str(buf, len, ", \"vendor\": \"%s\"", disk->vendor);
-	buf_add_str(buf, len, ", \"model\": \"%s\"", disk->model);
-	buf_add_str(buf, len, ", \"serial\": \"%s\"", disk->serial);
-	buf_add_str(buf, len, ", \"fw_rev\": \"%s\"", disk->fw_rev);
+	buf_add_str(buf, len, ", \"vendor\": \"%s\"", disk->disk_info.vendor);
+	buf_add_str(buf, len, ", \"model\": \"%s\"", disk->disk_info.model);
+	buf_add_str(buf, len, ", \"serial\": \"%s\"", disk->disk_info.serial);
+	buf_add_str(buf, len, ", \"fw_rev\": \"%s\"", disk->disk_info.fw_rev);
 	buf_add_str(buf, len, ", \"is_ata\": \"%s\"", json_tribool(disk->is_ata));
-	buf_add_str(buf, len, ", \"ata_smart_supported\": %s", json_bool(disk->ata_smart_supported));
-	buf_add_str(buf, len, ", \"sata_smart_ok\": \"%s\"", json_tribool(disk->sata_smart_ok));
+	buf_add_str(buf, len, ", \"ata_smart_supported\": %s", json_bool(disk->disk_info.ata_smart_supported));
+	buf_add_str(buf, len, ", \"sata_smart_ok\": \"%s\"", json_tribool(disk->disk_info.sata_smart_ok));
 
 	struct latency_summary *entry = &disk->latency.entries[disk->latency.cur_entry];
 
@@ -115,10 +115,10 @@ static void disk_inquiry_reply(sg_request_t *req, unsigned char status, unsigned
 		return;
 	}
 
-	parse_inquiry(disk->data_buf, sizeof(disk->data_buf) - residual_len, &disk->device_type, disk->vendor,
-	              disk->model, disk->fw_rev, disk->serial);
+	parse_inquiry(disk->data_buf, sizeof(disk->data_buf) - residual_len, &disk->disk_info.device_type, disk->disk_info.vendor,
+	              disk->disk_info.model, disk->disk_info.fw_rev, disk->disk_info.serial);
 
-	if (strcmp(disk->vendor, "ATA     ") == 0) {
+	if (strcmp(disk->disk_info.vendor, "ATA     ") == 0) {
 		// Disk is an ATA Disk, need to use ATA INQUIRY to get the real details
 		printf("ATA disk needs to be ATA IDENTIFYied\n");
 		disk->pending_ata_identify = 1;
@@ -164,15 +164,15 @@ static void disk_ata_identify_reply(sg_request_t *req, unsigned char status, uns
 	ata_get_ata_identify_model(disk->data_buf, ata_model);
 
 	char *vendor = strtok(ata_model, " ");
-	strncpy(disk->vendor, vendor, sizeof(disk->vendor));
+	strncpy(disk->disk_info.vendor, vendor, sizeof(disk->disk_info.vendor));
 
 	char *model = strtok(NULL, " ");
-	strncpy(disk->model, model, sizeof(disk->model));
+	strncpy(disk->disk_info.model, model, sizeof(disk->disk_info.model));
 
-	ata_get_ata_identify_serial_number(disk->data_buf, disk->serial);
-	ata_get_ata_identify_fw_rev(disk->data_buf, disk->fw_rev);
+	ata_get_ata_identify_serial_number(disk->data_buf, disk->disk_info.serial);
+	ata_get_ata_identify_fw_rev(disk->data_buf, disk->disk_info.fw_rev);
 	printf("ATA model: %s:%s\n", model, vendor);
-	disk->ata_smart_supported = ata_get_ata_identify_smart_supported(disk->data_buf);
+	disk->disk_info.ata_smart_supported = ata_get_ata_identify_smart_supported(disk->data_buf);
 
 	disk_state_machine_step(disk);
 }
@@ -210,7 +210,7 @@ static void disk_ata_smart_result_reply(sg_request_t *req, unsigned char status,
 	bool parsed = ata_smart_return_status_result(req->sense, sb_len_wr, &smart_ok);
 		printf("parsing of smart return: %d\n", parsed);
 	if (parsed) {
-		disk->sata_smart_ok = smart_ok ? TRIBOOL_TRUE : TRIBOOL_FALSE;
+		disk->disk_info.sata_smart_ok = smart_ok ? TRIBOOL_TRUE : TRIBOOL_FALSE;
 	}
 
 	disk_state_machine_step(disk);
