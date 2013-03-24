@@ -1,13 +1,65 @@
-disk_info:
-    sata_smart_ok: tribool
-    device_type: int
-    vendor:
-        string: 64
-    model:
-        string: 64
-    fw_rev:
-        string: 64
-    serial:
-        string: 64
-    ata_smart_supported: bool
+include:
+    global: stdbool.h
 
+define:
+    LATENCY_RANGES:
+        value: "{0.5, 1.0, 3.0, 7.0, 10.0, 15.0}"
+    NUM_TOP_LATENCIES:
+        value: 5
+    LATENCY_RANGE_COUNT:
+        value: 7
+
+#const:
+#    NUM_TOP_LATENCIES:
+#        type: int
+#        value: 5
+#    LATENCY_RANGE_COUNT:
+#        type: int
+#        value: 7
+
+enum:
+    tribool:
+        prefix: TRIBOOL_
+        values:
+            UNKNOWN:
+            FALSE:
+            TRUE:
+
+struct:
+    disk_info:
+        sata_smart_ok:
+            type: tribool
+        device_type:
+            type: int
+        vendor:
+            type: string
+            len: 64
+        model:
+            type: string
+            len: 64
+        fw_rev:
+            type: string
+            len: 64
+        serial:
+            type: string
+            len: 64
+        ata_smart_supported:
+            type: bool
+
+    latency_summary:
+        top_latencies:
+            type: array
+            array_type: double
+            len: NUM_TOP_LATENCIES
+        hist:
+            type: array
+            array_type: uint16_t
+            len: LATENCY_RANGE_COUNT
+
+    latency:
+        cur_entry:
+            type: int
+        entries:
+            type: array
+            array_type: latency_summary_t
+            len: 12*24*30

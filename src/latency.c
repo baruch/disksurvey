@@ -12,7 +12,7 @@ void latency_init(latency_t *latency)
     memset(latency, 0, sizeof(latency));
 }
 
-static void update_top_latencies(struct latency_summary *entry, double val)
+static void update_top_latencies(latency_summary_t *entry, double val)
 {
     int i;
 
@@ -26,7 +26,7 @@ static void update_top_latencies(struct latency_summary *entry, double val)
     entry->top_latencies[i] = val;
 }
 
-static void update_histogram(struct latency_summary *entry, double val)
+static void update_histogram(latency_summary_t *entry, double val)
 {
     int i;
 
@@ -43,7 +43,7 @@ static void update_histogram(struct latency_summary *entry, double val)
 
 void latency_add_sample(latency_t *latency, double val)
 {
-    struct latency_summary* entry = &latency->entries[latency->cur_entry];
+    latency_summary_t* entry = &latency->entries[latency->cur_entry];
 
     if (val > entry->top_latencies[0])
         update_top_latencies(entry, val);
@@ -55,6 +55,6 @@ void latency_tick(latency_t *latency)
 {
     latency->cur_entry++;
 
-    struct latency_summary* entry = &latency->entries[latency->cur_entry];
+    latency_summary_t* entry = &latency->entries[latency->cur_entry];
     memset(entry, 0, sizeof(entry));
 }

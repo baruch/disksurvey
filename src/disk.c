@@ -18,7 +18,7 @@
 static void disk_state_machine_step(disk_t *disk);
 static void disk_monitor(disk_t *disk);
 
-inline const char *json_tribool(tribool state)
+inline const char *json_tribool(tribool_e state)
 {
 	if (state == TRIBOOL_TRUE)
 		return "true";
@@ -48,7 +48,7 @@ int disk_json(disk_t *disk, char *buf, int len)
 	buf_add_str(buf, len, ", \"ata_smart_supported\": %s", json_bool(disk->disk_info.ata_smart_supported));
 	buf_add_str(buf, len, ", \"sata_smart_ok\": \"%s\"", json_tribool(disk->disk_info.sata_smart_ok));
 
-	struct latency_summary *entry = &disk->latency.entries[disk->latency.cur_entry];
+	latency_summary_t *entry = &disk->latency.entries[disk->latency.cur_entry];
 
 	double *top_latencies = entry->top_latencies;
 	buf_add_str(buf, len, ", \"last_top_latency\": [%g,%g,%g,%g,%g]", top_latencies[0], top_latencies[1], top_latencies[2], top_latencies[3], top_latencies[4]);

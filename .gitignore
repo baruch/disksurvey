@@ -10,3 +10,4 @@ web/app.js
 web/app.css
 web/coffee.js
 tests/test_disk_mgr
+src/disk_def.h

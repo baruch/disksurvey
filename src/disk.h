@@ -5,7 +5,7 @@
 #include "scsicmd.h"
 #include "latency.h"
 #include "util.h"
-#include "../src/disk_def.h"
+#include "src/disk_def.h"
 
 #include <time.h>
 #include <ev.h>
@@ -21,7 +21,7 @@ typedef struct disk_t {
 	unsigned pending_ata_identify : 1;
 	unsigned pending_sata_smart_result : 1;
 
-	tribool is_ata;
+	tribool_e is_ata;
 
 	ev_tstamp last_ping_ts;
 	ev_tstamp last_reply_ts;
