@@ -87,9 +87,15 @@ static void disk_tur_reply(sg_request_t *req, unsigned char status, unsigned cha
 void disk_tur(disk_t *disk)
 {
 	if (!disk->tur_request.in_progress) {
-		unsigned char cdb[6];
-		memset(cdb, 0, sizeof(cdb));
-		bool alive = sg_request(&disk->sg, &disk->tur_request, disk_tur_reply, cdb, sizeof(cdb), SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
+		unsigned char cdb[32];
+		unsigned cdb_len;
+
+		if (disk->is_ata)
+			cdb_len = cdb_ata_check_power_mode(cdb);
+		else
+			cdb_len = cdb_tur(cdb);
+			
+		bool alive = sg_request(&disk->sg, &disk->tur_request, disk_tur_reply, cdb, cdb_len, SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
 		printf("request sent, alive: %s\n", alive ? "yes" : "no");
 		if (!alive && disk->on_death) {
 			printf("Disk %p died\n", disk);
