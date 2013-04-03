@@ -141,6 +141,19 @@ static void on_death(disk_t *disk)
 	ev_async_send(mgr.loop, &mgr.cleanup_dead_disks);
 }
 
+static bool disk_manager_is_active(const char *dev)
+{
+	int disk_idx;
+	for_active_disks(disk_idx) {
+		char *sg_path = mgr.disk_list[disk_idx].disk.sg_path;
+		if (strcmp(dev, sg_path) == 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 void disk_manager_rescan(void)
 {
 	int ret;
@@ -160,30 +173,22 @@ void disk_manager_rescan(void)
 
 	for (glob_idx = 0; glob_idx < globbuf.gl_pathc; glob_idx++) {
 		char *dev = globbuf.gl_pathv[glob_idx];
-		bool found = false;
 		printf("\tDevice: %s - ", dev);
 
-		int disk_idx;
-		for_active_disks(disk_idx) {
-			char *sg_path = mgr.disk_list[disk_idx].disk.sg_path;
-			if (strcmp(dev, sg_path) == 0) {
-				printf("already known\n");
-				found = true;
-				break;
-			}
+		if (disk_manager_is_active(dev)) {
+			printf("already known\n");
+			continue;
 		}
 
-		if (!found) {
-			int new_disk_idx = disk_list_get_unused();
-			if (new_disk_idx != -1) {
-				printf("adding idx=%d!\n", new_disk_idx);
-				disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
-				disk_init(disk, dev);
-				disk->on_death = on_death;
-				disk_list_append(new_disk_idx, &mgr.alive_head);
-			} else {
-				printf("Want to add but no space!\n");
-			}
+		int new_disk_idx = disk_list_get_unused();
+		if (new_disk_idx != -1) {
+			printf("adding idx=%d!\n", new_disk_idx);
+			disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
+			disk_init(disk, dev);
+			disk->on_death = on_death;
+			disk_list_append(new_disk_idx, &mgr.alive_head);
+		} else {
+			printf("Want to add but no space!\n");
 		}
 	}
 }
