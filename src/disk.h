@@ -17,11 +17,7 @@ typedef struct disk_t {
 	sg_request_t tur_request;
 	sg_request_t data_request;
 
-	unsigned pending_inquiry : 1;
-	unsigned pending_ata_identify : 1;
 	unsigned pending_sata_smart_result : 1;
-
-	tribool_e is_ata;
 
 	ev_tstamp last_ping_ts;
 	ev_tstamp last_reply_ts;
@@ -32,14 +28,12 @@ typedef struct disk_t {
 	char data_buf[4096] __attribute__(( aligned(4096) ));
 	disk_info_t disk_info;
 	latency_t latency;
-
 } disk_t;
 
-void disk_init(disk_t *disk, const char *dev);
+void disk_init(disk_t *disk, disk_info_t *disk_info, const char *dev);
 void disk_cleanup(disk_t *disk);
 void disk_tick(disk_t *disk);
 void disk_tur(disk_t *disk);
-void disk_inquiry(disk_t *disk);
 int disk_json(disk_t *disk, char *buf, int len);
 
 #endif

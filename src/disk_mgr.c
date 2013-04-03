@@ -1,5 +1,6 @@
 #include "disk_mgr.h"
 #include "disk.h"
+#include "disk_scanner.h"
 #include "util.h"
 
 #include <glob.h>
@@ -7,7 +8,8 @@
 #include <string.h>
 #include <assert.h>
 
-#define MAX_DISKS 120
+#define MAX_DISKS 128
+#define MAX_SCAN_DISKS MAX_DISKS
 
 struct disk_state {
 	int prev;
@@ -27,11 +29,15 @@ struct disk_mgr {
 	int dead_head;
 	int first_unused_entry;
 	struct disk_state disk_list[MAX_DISKS];
+	disk_scanner_t disk_scan_list[MAX_SCAN_DISKS];
 };
 static struct disk_mgr mgr;
 
 #define for_active_disks(_idx_) \
 	for (_idx_ = mgr.alive_head; _idx_ != -1; _idx_ = mgr.disk_list[_idx_].next)
+
+#define for_dead_disks(_idx_) \
+	for (_idx_ = mgr.dead_head; _idx_ != -1; _idx_ = mgr.disk_list[_idx_].next)
 
 static void disk_list_remove(int idx, int *old_head)
 {
@@ -154,6 +160,45 @@ static bool disk_manager_is_active(const char *dev)
 	return false;
 }
 
+static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
+{
+	if (!disk_scanner->success) {
+		printf("Error while scanning device %s\n", disk_scanner->sg_path);
+		return;
+	}
+
+	disk_info_t *new_disk_info = &disk_scanner->disk_info;
+
+	// Is this a disk we have seen in the past and can reattach to the old info?
+	int disk_idx;
+	for_dead_disks(disk_idx) {
+		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		disk_info_t *old_disk_info = &disk->disk_info;
+
+		if (strcmp(new_disk_info->vendor, old_disk_info->vendor) == 0 &&
+		    strcmp(new_disk_info->model, old_disk_info->model) == 0 &&
+			strcmp(new_disk_info->serial, old_disk_info->serial) == 0)
+		{
+			disk_init(disk, new_disk_info, disk_scanner->sg_path);
+			disk->on_death = on_death;
+			disk_list_append(disk_idx, &mgr.alive_head);
+			return;
+		}
+	}
+
+	// This is a completely new disk, allocate a new one for it
+	int new_disk_idx = disk_list_get_unused();
+	if (new_disk_idx != -1) {
+		printf("adding idx=%d!\n", new_disk_idx);
+		disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
+		disk_init(disk, new_disk_info, disk_scanner->sg_path);
+		disk->on_death = on_death;
+		disk_list_append(new_disk_idx, &mgr.alive_head);
+	} else {
+		printf("Want to add but no space!\n");
+	}
+}
+
 void disk_manager_rescan(void)
 {
 	int ret;
@@ -180,15 +225,15 @@ void disk_manager_rescan(void)
 			continue;
 		}
 
-		int new_disk_idx = disk_list_get_unused();
-		if (new_disk_idx != -1) {
-			printf("adding idx=%d!\n", new_disk_idx);
-			disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
-			disk_init(disk, dev);
-			disk->on_death = on_death;
-			disk_list_append(new_disk_idx, &mgr.alive_head);
+		int disk_scanner_idx;
+		for (disk_scanner_idx = 0; disk_scanner_idx < MAX_SCAN_DISKS; disk_scanner_idx++) {
+			if (!disk_scanner_active(&mgr.disk_scan_list[disk_scanner_idx]))
+				break;
+		}
+		if (disk_scanner_idx == MAX_SCAN_DISKS) {
+			printf("No space to scan a new disk, will wait for next rescan\n");
 		} else {
-			printf("Want to add but no space!\n");
+			disk_scanner_inquiry(&mgr.disk_scan_list[disk_scanner_idx], dev, disk_mgr_scan_done_cb);
 		}
 	}
 }

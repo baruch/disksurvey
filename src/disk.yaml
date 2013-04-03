@@ -27,8 +27,6 @@ enum:
 
 struct:
     disk_info:
-        sata_smart_ok:
-            type: tribool
         device_type:
             type: int
         vendor:
@@ -45,6 +43,10 @@ struct:
             len: 64
         ata_smart_supported:
             type: bool
+        sata_smart_ok:
+            type: tribool
+        is_ata:
+            type: tribool
 
     latency_summary:
         top_latencies:
