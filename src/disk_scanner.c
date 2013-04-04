@@ -90,8 +90,8 @@ static void disk_scanner_inquiry_reply(sg_request_t *req, unsigned char status, 
            disk->disk_info.serial,
            disk->disk_info.fw_rev);
 
-	if (strcmp(disk->disk_info.vendor, "ATA     ") == 0) {
-		// Disk is an ATA Disk, need to use ATA INQUIRY to get the real details
+	if (strcmp(disk->disk_info.vendor, "ATA     ") == 0 || disk->disk_info.serial[0] == 0) {
+		// Disk is an ATA Disk, need to use ATA IDENTIFY to get the real details
 		printf("ATA disk needs to be ATA IDENTIFYied\n");
 		disk->disk_info.is_ata = TRIBOOL_TRUE;
         disk_scanner_ata_identify(disk);
