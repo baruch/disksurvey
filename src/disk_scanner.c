@@ -84,6 +84,12 @@ static void disk_scanner_inquiry_reply(sg_request_t *req, unsigned char status, 
 	parse_inquiry(disk->data_buf, sizeof(disk->data_buf) - residual_len, &disk->disk_info.device_type, disk->disk_info.vendor,
 	              disk->disk_info.model, disk->disk_info.fw_rev, disk->disk_info.serial);
 
+    printf("Disk identified by INQUIRY as vendor='%s' model='%s' serial='%s' fw_rev='%s'\n",
+           disk->disk_info.vendor,
+           disk->disk_info.model,
+           disk->disk_info.serial,
+           disk->disk_info.fw_rev);
+
 	if (strcmp(disk->disk_info.vendor, "ATA     ") == 0) {
 		// Disk is an ATA Disk, need to use ATA INQUIRY to get the real details
 		printf("ATA disk needs to be ATA IDENTIFYied\n");
