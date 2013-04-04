@@ -1,5 +1,7 @@
 include:
     global: stdbool.h
+    global: stdint.h
+    global: stdio.h
 
 define:
     LATENCY_RANGES:
@@ -51,11 +53,13 @@ struct:
     latency_summary:
         top_latencies:
             type: array
-            array_type: double
+            array_type:
+                type: double
             len: NUM_TOP_LATENCIES
         hist:
             type: array
-            array_type: uint16_t
+            array_type:
+                type: uint16_t
             len: LATENCY_RANGE_COUNT
 
     latency:
@@ -63,5 +67,6 @@ struct:
             type: int
         entries:
             type: array
-            array_type: latency_summary_t
+            array_type:
+                type: latency_summary
             len: 12*24*30

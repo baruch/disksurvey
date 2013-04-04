@@ -3,10 +3,16 @@
 #include "disk_scanner.h"
 #include "util.h"
 
+#include <ctype.h>
 #include <glob.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define MAX_DISKS 128
 #define MAX_SCAN_DISKS MAX_DISKS
@@ -24,12 +30,14 @@ struct disk_mgr {
 	ev_timer tur_timer;
 	ev_timer five_min_timer;
 	ev_async cleanup_dead_disks;
+	ev_signal hup_signal;
 
 	int alive_head;
 	int dead_head;
 	int first_unused_entry;
 	struct disk_state disk_list[MAX_DISKS];
 	disk_scanner_t disk_scan_list[MAX_SCAN_DISKS];
+	char state_file_name[256];
 };
 static struct disk_mgr mgr;
 
@@ -199,13 +207,105 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 	}
 }
 
+static bool disk_manager_save_disk_state(disk_t *disk, int fd)
+{
+	uint32_t id = 2;
+	ssize_t ret = write(fd, &id, sizeof(id));
+	if (ret != sizeof(id)) {
+		printf("Error writing to data file (id): %m\n");
+		return false;
+	}
+
+	// Write disk_info
+	disk_info_t *info = &disk->disk_info;
+	ret = write(fd, info, sizeof(*info));
+	if (ret != sizeof(*info)) {
+		printf("Error writing to data file (disk_info): %m\n");
+		return false;
+	}
+
+	// Write latency
+	latency_t *latency = &disk->latency;
+	ret = write(fd, latency, sizeof(*latency));
+	if (ret != sizeof(*latency)) {
+		printf("Error writing to data file (latency): %m\n");
+		return false;
+	}
+
+	return true;
+}
+
+static void disk_manager_save_state_nofork(void)
+{
+	int disk_idx;
+	bool error = true;
+	char tmp_file_name[256];
+
+	printf("Saving state\n");
+
+	snprintf(tmp_file_name, sizeof(tmp_file_name), "%s.XXXXXX", mgr.state_file_name);
+	int fd = mkstemp(tmp_file_name);
+
+	uint32_t version = 1;
+	ssize_t ret = write(fd, &version, sizeof(version));
+	if (ret != sizeof(version)) {
+		printf("Error writing to data file: %m\n");
+		goto Exit;
+	}
+
+	for_active_disks(disk_idx) {
+		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		if (!disk_manager_save_disk_state(disk, fd))
+			goto Exit;
+	}
+
+	for_dead_disks(disk_idx) {
+		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		if (!disk_manager_save_disk_state(disk, fd))
+			goto Exit;
+	}
+
+	error = false;
+
+Exit:
+	close(fd);
+	if (error) {
+		unlink(tmp_file_name);
+	} else {
+		rename(tmp_file_name, mgr.state_file_name);
+	}
+	printf("Save state done, %s\n", error ? "with errors" : "successfully");
+}
+
+/** To avoid any needless delays while writing the state to the disk and to
+ * also avoid locking the monitoring from its work we will simply fork to lock
+ * the state in a known consistent way and let the parent work normally, the
+ * only impact is the copy-on-write that will be needed by the parent when it
+ * modifies data but due to the normal rate of work this shouldn't be a big impact.
+ */
+static void disk_manager_save_state(void)
+{
+	printf("Forking to save state\n");
+	pid_t pid = fork();
+	if (pid == 0) {
+		/* Child, saves information */
+		disk_manager_save_state_nofork();
+		exit(0);
+	} else if (pid == -1) {
+		/* Parent, error */
+		printf("Error forking to save state: %m\n");
+	} else {
+		/* Parent, ok */
+	}
+}
+
 void disk_manager_rescan(void)
 {
 	int ret;
 	glob_t globbuf = { 0, NULL, 0 };
 
 	printf("Rescanning disks\n");
-	
+
 	ret = glob("/dev/sg*", GLOB_NOSORT, NULL, &globbuf);
 	if (ret != 0) {
 		printf("Glob had an error finding scsi generic devices, ret=%d\n", ret);
@@ -257,6 +357,13 @@ static void five_min_tick_timer(struct ev_loop *loop, ev_timer *watcher, int rev
 	for_active_disks(disk_idx) {
 		disk_tick(&mgr.disk_list[disk_idx].disk);
 	}
+
+	disk_manager_save_state();
+}
+
+static void handle_sighup(struct ev_loop *loop, ev_signal *watcher, int revents)
+{
+	disk_manager_save_state();
 }
 
 static void disk_manager_init_mgr(void)
@@ -267,14 +374,78 @@ static void disk_manager_init_mgr(void)
 	// Initialize the heads
 	mgr.alive_head = -1;
 	mgr.dead_head = -1;
+
+	snprintf(mgr.state_file_name, sizeof(mgr.state_file_name), "./disksurvey.dat");
+}
+
+static void disk_manager_load(void)
+{
+	int fd = open(mgr.state_file_name, O_RDONLY);
+	if (fd < 0) {
+		printf("Failed to open state data: %m\n");
+		return;
+	}
+
+	uint32_t version;
+	ssize_t ret = read(fd, &version, sizeof(version));
+	if (ret != sizeof(version)) {
+		printf("Error reading version: %m\n");
+		goto Exit;
+	}
+	if (version != 1) {
+		printf("Unknown version of state file, got: %d expected: %d\n", version, 1);
+		goto Exit;
+	}
+
+	uint32_t id;
+	int i;
+	for (i = 0; i < MAX_DISKS; i++) {
+		ret = read(fd, &id, sizeof(id));
+		if (ret == 0) {
+			printf("EOF\n");
+			break;
+		}
+		if (ret != sizeof(id)) {
+			printf("Error reading record id: %m\n");
+			goto Exit;
+		}
+		if (id != 2) {
+			printf("Unexpected record id, got %d\n", id);
+			goto Exit;
+		}
+
+		disk_info_t disk_info;
+		latency_t latency;
+
+		ret = read(fd, &disk_info, sizeof(disk_info));
+		if (ret != sizeof(disk_info)) {
+			printf("Error while reading disk_info, ret=%d: %m\n", ret);
+			goto Exit;
+		}
+
+		ret = read(fd, &latency, sizeof(latency));
+		if (ret != sizeof(latency)) {
+			printf("Error while reading latency, ret=%d: %m\n", ret);
+			goto Exit;
+		}
+
+		printf("Loaded disk data\n");
+		mgr.disk_list[i].disk.disk_info = disk_info;
+		disk_list_append(i, &mgr.dead_head);
+		mgr.first_unused_entry = i;
+	}
+
+Exit:
+	close(fd);
 }
 
 void disk_manager_init(struct ev_loop *loop)
 {
 	disk_manager_init_mgr();
+	disk_manager_load();
 
 	mgr.loop = loop;
-	
+
 	// The first event will be 0 seconds into the event loop and then once every hour
 	ev_timer *timer = &mgr.periodic_rescan_timer;
 	ev_timer_init(timer, rescan_cb, 0, 60*60);
@@ -291,4 +462,8 @@ void disk_manager_init(struct ev_loop *loop)
 	ev_async *async = &mgr.cleanup_dead_disks;
 	ev_async_init(async, cleanup_dead_disks);
 	ev_async_start(loop, async);
+
+	ev_signal *evsig = &mgr.hup_signal;
+	ev_signal_init(evsig, handle_sighup, SIGHUP);
+	ev_signal_start(loop, evsig);
 }

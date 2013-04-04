@@ -10,6 +10,7 @@
 #include <time.h>
 #include <ev.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 typedef struct disk_t {
 	char sg_path[32];

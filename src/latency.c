@@ -58,3 +58,7 @@ void latency_tick(latency_t *latency)
     latency_summary_t* entry = &latency->entries[latency->cur_entry];
     memset(entry, 0, sizeof(entry));
 }
+
+void latency_save(latency_t *latency, FILE *fd)
+{
+}
