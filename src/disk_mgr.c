@@ -201,6 +201,7 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 		{
 			disk_init(disk, new_disk_info, disk_scanner->sg_path);
 			disk->on_death = on_death;
+			disk_list_remove(disk_idx, &mgr.dead_head);
 			disk_list_append(disk_idx, &mgr.alive_head);
 			return;
 		}
@@ -444,7 +445,7 @@ static void disk_manager_load(void)
 		printf("Loaded disk data\n");
 		mgr.disk_list[i].disk.disk_info = disk_info;
 		disk_list_append(i, &mgr.dead_head);
-		mgr.first_unused_entry = i;
+		mgr.first_unused_entry = i+1;
 	}
 
 Exit:
