@@ -268,12 +268,14 @@ static void disk_manager_save_state_nofork(void)
 
 	for_active_disks(disk_idx) {
 		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		printf("Saving live disk %d: %p\n", disk_idx, disk);
 		if (!disk_manager_save_disk_state(disk, fd))
 			goto Exit;
 	}
 
 	for_dead_disks(disk_idx) {
 		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		printf("Saving dead disk %d: %p\n", disk_idx, disk);
 		if (!disk_manager_save_disk_state(disk, fd))
 			goto Exit;
 	}
