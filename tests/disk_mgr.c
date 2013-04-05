@@ -3,18 +3,22 @@
 
 #include "../src/disk_mgr.c"
 
-void disk_init(disk_t *disk, const char *dev) {}
+void disk_init(disk_t *disk, disk_info_t *disk_info, const char *dev) {}
 void disk_cleanup(disk_t *disk) {}
 void disk_tick(disk_t *disk) {}
 void disk_tur(disk_t *disk) {}
 void disk_inquiry(disk_t *disk) {}
+void disk_stop(disk_t *disk) {}
 int disk_json(disk_t *disk, char *buf, int len) {return 0;}
-
+bool disk_scanner_active(disk_scanner_t *disk_scanner) { return false; }
+void disk_scanner_inquiry(disk_scanner_t *disk, const char *sg_dev, scanner_done_cb done_cb) {}
 
 EV_API_DECL void ev_async_send     (EV_P_ ev_async *w) {}
 EV_API_DECL void ev_timer_start    (EV_P_ ev_timer *w) {}
 EV_API_DECL void ev_async_start    (EV_P_ ev_async *w) {}
-
+EV_API_DECL void ev_timer_stop     (EV_P_ ev_timer *w) {}
+EV_API_DECL void ev_break (EV_P_ int how EV_CPP (= EVBREAK_ONE)) {}
+EV_API_DECL void ev_signal_start   (EV_P_ ev_signal *w) {}
 
 void setup(void)
 {
@@ -98,6 +102,7 @@ END_TEST
 START_TEST(test_disk_list_last_disk_removal)
 {
     int disk_idx = disk_list_get_unused();
+    fail_unless(disk_idx == 0, NULL);
     disk_list_append(disk_idx, &mgr.alive_head);
     disk_list_remove(disk_idx, &mgr.alive_head);
     fail_unless(mgr.alive_head == -1, NULL);
