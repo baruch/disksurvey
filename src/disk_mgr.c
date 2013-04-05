@@ -29,6 +29,7 @@ struct disk_mgr {
 	ev_timer periodic_rescan_timer;
 	ev_timer tur_timer;
 	ev_timer five_min_timer;
+	ev_timer stop_timer;
 	ev_async cleanup_dead_disks;
 	ev_signal hup_signal;
 
@@ -129,10 +130,21 @@ int disk_manager_disk_list_json(char *buf, int len)
 static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int revents)
 {
 	printf("Cleanup dead disks started\n");
+	bool found = false;
 	int disk_idx;
 
-	for_active_disks(disk_idx) {
-		if (mgr.disk_list[disk_idx].died) {
+	do {
+		found = false;
+
+		// since we modify the list, we can't do it in the loop
+		for_active_disks(disk_idx) {
+			if (mgr.disk_list[disk_idx].died) {
+				found = true;
+				break;
+			}
+		}
+
+		if (found) {
 			mgr.disk_list[disk_idx].died = false;
 
 			disk_list_remove(disk_idx, &mgr.alive_head);
@@ -143,7 +155,7 @@ static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int reve
 			printf("Cleaning dead disk %p\n", disk);
 			disk_cleanup(disk);
 		}
-	}
+	} while (found);
 	printf("Cleanup dead disks finished\n");
 }
 
@@ -466,4 +478,36 @@ void disk_manager_init(struct ev_loop *loop)
 	ev_signal *evsig = &mgr.hup_signal;
 	ev_signal_init(evsig, handle_sighup, SIGHUP);
 	ev_signal_start(loop, evsig);
+}
+
+static void disk_manager_check_stop(struct ev_loop *loop, ev_timer *watcher, int revents)
+{
+	printf("Checking for stop\n");
+
+	int disk_idx;
+	for_active_disks(disk_idx) {
+		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		printf("Trying to stop disk %d: %p\n", disk_idx, disk);
+		disk_stop(disk);
+	}
+
+	cleanup_dead_disks(loop, NULL, revents);
+
+	if (mgr.alive_head == -1) {
+		printf("No more live disks, stopping\n");
+		// No live disks anymore, can cleanly shutdown
+		ev_break(mgr.loop, EVBREAK_ALL);
+		disk_manager_save_state_nofork();
+	}
+	printf("checking done\n");
+}
+
+void disk_manager_stop(void)
+{
+	ev_timer_stop(mgr.loop, &mgr.tur_timer);
+	ev_timer_stop(mgr.loop, &mgr.five_min_timer);
+
+	ev_timer *timer = &mgr.stop_timer;
+	ev_timer_init(timer, disk_manager_check_stop, 0, 1);
+	ev_timer_start(mgr.loop, timer);
 }

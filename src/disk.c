@@ -188,6 +188,16 @@ void disk_cleanup(disk_t *disk)
 	memset(disk->sg_path, 0, sizeof(disk->sg_path));
 }
 
+void disk_stop(disk_t *disk)
+{
+	if (disk->tur_request.in_progress)
+		return;
+	if (disk->data_request.in_progress)
+		return;
+
+	disk->on_death(disk);
+}
+
 void disk_init(disk_t *disk, disk_info_t *disk_info, const char *dev)
 {
 	memset(disk, 0, sizeof(*disk));

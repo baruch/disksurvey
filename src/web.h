@@ -4,5 +4,6 @@
 #include <ev.h>
 
 void web_init(struct ev_loop *loop, int port);
+void web_stop(void);
 
 #endif

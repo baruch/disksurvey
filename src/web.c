@@ -181,3 +181,8 @@ void web_init(struct ev_loop *loop, int port)
 	printf("listening on port %d\n", port);
 	ebb_server_listen_on_port(&web.server, port);
 }
+
+void web_stop(void)
+{
+	ebb_server_unlisten(&web.server);
+}

@@ -32,6 +32,7 @@ typedef struct disk_t {
 } disk_t;
 
 void disk_init(disk_t *disk, disk_info_t *disk_info, const char *dev);
+void disk_stop(disk_t *disk);
 void disk_cleanup(disk_t *disk);
 void disk_tick(disk_t *disk);
 void disk_tur(disk_t *disk);
