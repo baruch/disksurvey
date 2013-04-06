@@ -189,6 +189,11 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 
 	disk_info_t *new_disk_info = &disk_scanner->disk_info;
 
+	if (new_disk_info->device_type != SCSI_DEV_TYPE_BLOCK) {
+		printf("Unsupported device type %d\n", new_disk_info->device_type);
+		return;
+	}
+
 	// Is this a disk we have seen in the past and can reattach to the old info?
 	int disk_idx;
 	for_dead_disks(disk_idx) {
