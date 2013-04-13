@@ -2,6 +2,7 @@
 #include "disk.h"
 #include "disk_scanner.h"
 #include "util.h"
+#include "system_id.h"
 
 #include <ctype.h>
 #include <glob.h>
@@ -33,6 +34,7 @@ struct disk_mgr {
 	ev_async cleanup_dead_disks;
 	ev_signal hup_signal;
 
+	system_identifier_t system_id;
 	int alive_head;
 	int dead_head;
 	int first_unused_entry;
@@ -463,6 +465,7 @@ void disk_manager_init(struct ev_loop *loop)
 {
 	disk_manager_init_mgr();
 	disk_manager_load();
+	system_identifier_read(&mgr.system_id);
 
 	mgr.loop = loop;
 

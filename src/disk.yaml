@@ -28,6 +28,20 @@ enum:
             TRUE:
 
 struct:
+    system_identifier:
+        system:
+            type: string
+            len: 64
+        chassis:
+            type: string
+            len: 64
+        baseboard:
+            type: string
+            len: 64
+        mac:
+            type: string
+            len: 64
+
     disk_info:
         device_type:
             type: int
