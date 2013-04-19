@@ -1,6 +1,7 @@
 *.o
 .*.d
 .redo
+.*.swp
 disksurvey
 tags
 libebb.a
