@@ -56,7 +56,8 @@ static void disk_scanner_ata_identify_reply(sg_request_t *req, unsigned char sta
 	ata_get_ata_identify_serial_number(disk->data_buf, disk->disk_info.serial);
 	ata_get_ata_identify_fw_rev(disk->data_buf, disk->disk_info.fw_rev);
 	printf("ATA model: %s:%s\n", model, vendor);
-	disk->disk_info.ata_smart_supported = ata_get_ata_identify_smart_supported(disk->data_buf);
+	disk->disk_info.ata.smart_supported = ata_get_ata_identify_smart_supported(disk->data_buf);
+    disk->disk_info.ata.smart_ok = true; // Just default to it until we actually read it
     disk_scanner_done(disk, true);
 }
 
@@ -93,10 +94,10 @@ static void disk_scanner_inquiry_reply(sg_request_t *req, unsigned char status, 
 	if (strcmp(disk->disk_info.vendor, "ATA     ") == 0 || disk->disk_info.serial[0] == 0) {
 		// Disk is an ATA Disk, need to use ATA IDENTIFY to get the real details
 		printf("ATA disk needs to be ATA IDENTIFYied\n");
-		disk->disk_info.is_ata = TRIBOOL_TRUE;
+		disk->disk_info.disk_type = DISK_TYPE_ATA;
         disk_scanner_ata_identify(disk);
 	} else {
-		disk->disk_info.is_ata = TRIBOOL_FALSE;
+		disk->disk_info.disk_type = DISK_TYPE_SAS;
         disk_scanner_done(disk, true);
 	}
 }

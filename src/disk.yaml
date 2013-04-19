@@ -27,6 +27,13 @@ enum:
             FALSE:
             TRUE:
 
+    disk_type:
+        prefix: DISK_TYPE_
+        values:
+            UNKNOWN:
+            ATA:
+            SAS:
+
 struct:
     system_identifier:
         system:
@@ -41,6 +48,18 @@ struct:
         mac:
             type: string
             len: 64
+
+    disk_ata:
+        smart_supported:
+            type: bool
+        smart_ok:
+            type: bool
+
+    disk_sas:
+        smart_asc:
+            type: uint8_t
+        smart_ascq:
+            type: uint8_t
 
     disk_info:
         device_type:
@@ -57,12 +76,12 @@ struct:
         serial:
             type: string
             len: 64
-        ata_smart_supported:
-            type: bool
-        sata_smart_ok:
-            type: tribool
-        is_ata:
-            type: tribool
+        disk_type:
+            type: disk_type
+        ata:
+            type: disk_ata
+        sas:
+            type: disk_sas
 
     latency_summary:
         top_latencies:

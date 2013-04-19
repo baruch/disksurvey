@@ -44,9 +44,24 @@ int disk_json(disk_t *disk, char *buf, int len)
 	buf_add_str(buf, len, ", \"model\": \"%s\"", disk->disk_info.model);
 	buf_add_str(buf, len, ", \"serial\": \"%s\"", disk->disk_info.serial);
 	buf_add_str(buf, len, ", \"fw_rev\": \"%s\"", disk->disk_info.fw_rev);
-	buf_add_str(buf, len, ", \"is_ata\": \"%s\"", json_tribool(disk->disk_info.is_ata));
-	buf_add_str(buf, len, ", \"ata_smart_supported\": %s", json_bool(disk->disk_info.ata_smart_supported));
-	buf_add_str(buf, len, ", \"sata_smart_ok\": \"%s\"", json_tribool(disk->disk_info.sata_smart_ok));
+
+	bool smart_ok = true;
+
+	switch (disk->disk_info.disk_type) {
+		case DISK_TYPE_ATA:
+			if (disk->disk_info.ata.smart_supported)
+				smart_ok = disk->disk_info.ata.smart_ok;
+			break;
+
+		case DISK_TYPE_SAS:
+			smart_ok = disk->disk_info.sas.smart_asc == 0 && disk->disk_info.sas.smart_ascq == 0;
+			break;
+
+		case DISK_TYPE_UNKNOWN:
+			break;
+	}
+
+	buf_add_str(buf, len, ", \"smart_ok\": \"%s\"", json_bool(smart_ok));
 
 	latency_summary_t *entry = &disk->latency.entries[disk->latency.cur_entry];
 
@@ -90,7 +105,7 @@ void disk_tur(disk_t *disk)
 		unsigned char cdb[32];
 		unsigned cdb_len;
 
-		if (disk->disk_info.is_ata)
+		if (disk->disk_info.disk_type == DISK_TYPE_ATA)
 			cdb_len = cdb_ata_check_power_mode(cdb);
 		else
 			cdb_len = cdb_tur(cdb);
@@ -126,7 +141,7 @@ static void disk_ata_smart_result_reply(sg_request_t *req, unsigned char status,
 	bool parsed = ata_smart_return_status_result(req->sense, sb_len_wr, &smart_ok);
 		printf("parsing of smart return: %d\n", parsed);
 	if (parsed) {
-		disk->disk_info.sata_smart_ok = smart_ok ? TRIBOOL_TRUE : TRIBOOL_FALSE;
+		disk->disk_info.ata.smart_ok = smart_ok;
 	}
 
 	disk_state_machine_step(disk);
@@ -165,7 +180,7 @@ static void disk_monitor(disk_t *disk)
 	if (disk->last_monitor_ts + MONITOR_INTERVAL_SEC < now) {
 		printf("Monitor initiated\n");
 		disk->last_monitor_ts = now;
-		if (disk->disk_info.is_ata == TRIBOOL_TRUE) {
+		if (disk->disk_info.disk_type == DISK_TYPE_ATA) {
 			disk_ata_smart_result(disk);
 			//TODO: disk_ata_smart_attributes(disk);
 		} else {
