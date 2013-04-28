@@ -606,7 +606,32 @@ static void disk_manager_load(void)
             goto Exit;
         }
         offset += item_size;
-        // TODO: convert the latency part
+        // convert the latency part
+        if (latency_pb->has_current_entry)
+            latency.cur_entry = latency_pb->current_entry;
+        else
+            latency.cur_entry = 0;
+
+        int k;
+        for (k = 0; k < latency_pb->n_entries; k++) {
+            int j;
+            Disksurvey__LatencyEntry *entry = latency_pb->entries[k];
+
+            int n_top_latencies = entry->n_top_latencies;
+            if (n_top_latencies > ARRAY_SIZE(latency.entries[0].top_latencies))
+                n_top_latencies = ARRAY_SIZE(latency.entries[0].top_latencies);
+            for (j = 0; j < n_top_latencies; j++) {
+                latency.entries[i].top_latencies[j] = entry->top_latencies[j];
+            }
+
+            int n_histogram = entry->n_histogram;
+            if (n_histogram > ARRAY_SIZE(latency.entries[0].hist))
+                n_histogram = ARRAY_SIZE(latency.entries[0].hist);
+            for (j = 0; j < n_histogram; j++) {
+                latency.entries[i].hist[j] = entry->histogram[j];
+            }
+        }
+
         disksurvey__latency__free_unpacked(latency_pb, NULL);
 
         if (bad_disk) {
