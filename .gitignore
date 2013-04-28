@@ -12,3 +12,8 @@ web/app.css
 web/coffee.js
 tests/test_disk_mgr
 src/disk_def.h
+src/protocol.pb-c.[hc]
+disksurvey.dat*
+*.orig
+*.rej
+src/tmp/

@@ -3,7 +3,10 @@
 #include "disk_scanner.h"
 #include "util.h"
 #include "system_id.h"
+#include "protocol.pb-c.h"
 
+#include <arpa/inet.h>
+#include <sys/mman.h>
 #include <ctype.h>
 #include <glob.h>
 #include <stdio.h>
@@ -49,6 +52,12 @@ static struct disk_mgr mgr;
 
 #define for_dead_disks(_idx_) \
 	for (_idx_ = mgr.dead_head; _idx_ != -1; _idx_ = mgr.disk_list[_idx_].next)
+
+static inline void strlcpy(char *dst, const char *src, size_t len)
+{
+    strncpy(dst, src, len);
+    dst[len-1] = 0;
+}
 
 static void disk_list_remove(int idx, int *old_head)
 {
@@ -227,32 +236,118 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 	}
 }
 
-static bool disk_manager_save_disk_state(disk_t *disk, int fd)
+static bool disk_manager_save_disk_info(disk_info_t *disk_info, int fd)
 {
-	uint32_t id = 2;
-	ssize_t ret = write(fd, &id, sizeof(id));
-	if (ret != sizeof(id)) {
-		printf("Error writing to data file (id): %m\n");
+    Disksurvey__DiskATA disk_ata_pb = DISKSURVEY__DISK_ATA__INIT;
+    Disksurvey__DiskSAS disk_sas_pb = DISKSURVEY__DISK_SAS__INIT;
+    Disksurvey__DiskInfo disk_info_pb = DISKSURVEY__DISK_INFO__INIT;
+    void *buf;
+    uint32_t buf_size;
+
+    // Fill the data
+    disk_info_pb.vendor = strdup(disk_info->vendor);
+    disk_info_pb.model = strdup(disk_info->model);
+    disk_info_pb.serial = strdup(disk_info->serial);
+    disk_info_pb.fw_rev = strdup(disk_info->fw_rev);
+    disk_info_pb.has_device_type = true;
+    disk_info_pb.device_type = disk_info->device_type;
+
+    switch (disk_info->disk_type) {
+        case DISK_TYPE_ATA:
+            disk_ata_pb.smart_supported = disk_info->ata.smart_supported;
+            disk_ata_pb.smart_ok = disk_info->ata.smart_ok;
+            disk_info_pb.ata = &disk_ata_pb;
+            break;
+        case DISK_TYPE_SAS:
+            disk_sas_pb.smart_asc = disk_info->sas.smart_asc;
+            disk_sas_pb.smart_ascq = disk_info->sas.smart_ascq;
+            disk_info_pb.sas = &disk_sas_pb;
+            break;
+        case DISK_TYPE_UNKNOWN:
+            break;
+    }
+
+    // Marshall it
+    buf_size = disksurvey__disk_info__get_packed_size(&disk_info_pb);
+    buf = alloca(buf_size);
+    disksurvey__disk_info__pack(&disk_info_pb, buf);
+
+    // Write the size
+    uint32_t buf_size_n = htonl(buf_size);
+	ssize_t ret = write(fd, &buf_size_n, sizeof(buf_size_n));
+	if (ret != sizeof(buf_size_n)) {
+		printf("Error writing to data file buf_size: %m\n");
 		return false;
 	}
 
-	// Write disk_info
-	disk_info_t *info = &disk->disk_info;
-	ret = write(fd, info, sizeof(*info));
-	if (ret != sizeof(*info)) {
+    // Write the data
+	ret = write(fd, buf, buf_size);
+	if (ret != buf_size) {
 		printf("Error writing to data file (disk_info): %m\n");
 		return false;
 	}
 
-	// Write latency
-	latency_t *latency = &disk->latency;
-	ret = write(fd, latency, sizeof(*latency));
-	if (ret != sizeof(*latency)) {
+	return true;
+}
+
+static bool disk_manager_save_disk_latency(latency_t *latency, int fd)
+{
+    int i;
+    Disksurvey__LatencyEntry **entries_pb;
+    Disksurvey__Latency latency_pb = DISKSURVEY__LATENCY__INIT;
+    void *buf;
+    uint32_t buf_size;
+
+
+    // Fill the data
+    latency_pb.current_entry = latency->cur_entry;
+    latency_pb.has_current_entry = true;
+    latency_pb.n_entries = ARRAY_SIZE(latency->entries);
+
+    entries_pb = calloc(latency_pb.n_entries, sizeof(Disksurvey__LatencyEntry*));
+    latency_pb.entries = entries_pb;
+
+    for (i = 0; i < latency_pb.n_entries; i++) {
+        Disksurvey__LatencyEntry *entry = malloc(sizeof(Disksurvey__LatencyEntry));
+        entries_pb[i] = entry;
+
+        disksurvey__latency_entry__init(entry);
+        entry->n_top_latencies = ARRAY_SIZE(latency->entries[0].top_latencies);
+        entry->top_latencies = latency->entries[i].top_latencies;
+        entry->n_histogram = ARRAY_SIZE(latency->entries[0].hist);
+        entry->histogram = latency->entries[i].hist;
+    }
+
+    // Marshall it
+    buf_size = disksurvey__latency__get_packed_size(&latency_pb);
+    buf = malloc(buf_size);
+    disksurvey__latency__pack(&latency_pb, buf);
+
+    // Write the size
+    uint32_t buf_size_n = htonl(buf_size);
+	ssize_t ret = write(fd, &buf_size_n, sizeof(buf_size_n));
+	if (ret != sizeof(buf_size_n)) {
+		printf("Error writing to data file buf_size: %m\n");
+		return false;
+	}
+
+    // Write the data
+	ret = write(fd, buf, buf_size);
+	if (ret != buf_size) {
 		printf("Error writing to data file (latency): %m\n");
 		return false;
 	}
 
 	return true;
+}
+
+static bool disk_manager_save_disk_state(disk_t *disk, int fd)
+{
+    if (!disk_manager_save_disk_info(&disk->disk_info, fd))
+        return false;
+    if (!disk_manager_save_disk_latency(&disk->latency, fd))
+        return false;
+    return true;
 }
 
 static void disk_manager_save_state_nofork(void)
@@ -266,7 +361,7 @@ static void disk_manager_save_state_nofork(void)
 	snprintf(tmp_file_name, sizeof(tmp_file_name), "%s.XXXXXX", mgr.state_file_name);
 	int fd = mkstemp(tmp_file_name);
 
-	uint32_t version = 1;
+	uint32_t version = htonl(2);
 	ssize_t ret = write(fd, &version, sizeof(version));
 	if (ret != sizeof(version)) {
 		printf("Error writing to data file: %m\n");
@@ -276,15 +371,19 @@ static void disk_manager_save_state_nofork(void)
 	for_active_disks(disk_idx) {
 		disk_t *disk = &mgr.disk_list[disk_idx].disk;
 		printf("Saving live disk %d: %p\n", disk_idx, disk);
-		if (!disk_manager_save_disk_state(disk, fd))
+		if (!disk_manager_save_disk_state(disk, fd)) {
+            printf("Error saving disk data\n");
 			goto Exit;
+        }
 	}
 
 	for_dead_disks(disk_idx) {
 		disk_t *disk = &mgr.disk_list[disk_idx].disk;
 		printf("Saving dead disk %d: %p\n", disk_idx, disk);
-		if (!disk_manager_save_disk_state(disk, fd))
+		if (!disk_manager_save_disk_state(disk, fd)) {
+            printf("Error saving disk data\n");
 			goto Exit;
+        }
 	}
 
 	error = false;
@@ -408,56 +507,123 @@ static void disk_manager_load(void)
 		return;
 	}
 
-	uint32_t version;
-	ssize_t ret = read(fd, &version, sizeof(version));
-	if (ret != sizeof(version)) {
-		printf("Error reading version: %m\n");
-		goto Exit;
-	}
-	if (version != 1) {
+    struct stat statbuf;
+    int ret = fstat(fd, &statbuf);
+    if (ret < 0) {
+        printf("Failed to stat file: %m\n");
+        close(fd);
+        return;
+    }
+
+    if (statbuf.st_size < 4) {
+        printf("Not enough size to include any useful data, ignore it\n");
+        close(fd);
+        return;
+    }
+
+    unsigned char *buf = mmap(NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE|MAP_POPULATE, fd, 0);
+    if (!buf) {
+        printf("Failed to map data: %m\n");
+        close(fd);
+        return;
+    }
+
+	uint32_t version = ntohl(*(uint32_t*)buf);
+	if (version != 2) {
 		printf("Unknown version of state file, got: %d expected: %d\n", version, 1);
 		goto Exit;
 	}
 
-	uint32_t id;
+    printf("Loading disk data version %u\n", version);
+
+    uint32_t offset = 4;
+	uint32_t item_size;
 	int i;
 	for (i = 0; i < MAX_DISKS; i++) {
-		ret = read(fd, &id, sizeof(id));
-		if (ret == 0) {
-			printf("EOF\n");
-			break;
-		}
-		if (ret != sizeof(id)) {
-			printf("Error reading record id: %m\n");
-			goto Exit;
-		}
-		if (id != 2) {
-			printf("Unexpected record id, got %d\n", id);
-			goto Exit;
-		}
-
+        Disksurvey__DiskInfo *disk_info_pb = NULL;
+        Disksurvey__Latency *latency_pb = NULL;
 		disk_info_t disk_info;
 		latency_t latency;
+        bool bad_disk = false;
 
-		ret = read(fd, &disk_info, sizeof(disk_info));
-		if (ret != sizeof(disk_info)) {
-			printf("Error while reading disk_info, ret=%d: %m\n", ret);
-			goto Exit;
-		}
+        /* Read the disk info part */
+        if (offset+4 > statbuf.st_size) {
+            // This ends the last data, exit silently
+            goto Exit;
+        }
+        item_size = ntohl(*(uint32_t*)(buf+offset));
+        offset += 4;
+        if (offset + item_size > statbuf.st_size) {
+            printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", offset, item_size, (uint32_t)statbuf.st_size);
+            goto Exit;
+        }
+        disk_info_pb = disksurvey__disk_info__unpack(NULL, item_size, buf+offset);
+        if (!disk_info_pb) {
+            printf("Failed to unpack disk survey disk info data\n");
+            goto Exit;
+        }
+        offset += item_size;
 
-		ret = read(fd, &latency, sizeof(latency));
-		if (ret != sizeof(latency)) {
-			printf("Error while reading latency, ret=%d: %m\n", ret);
-			goto Exit;
-		}
+        strlcpy(disk_info.vendor, disk_info_pb->vendor, sizeof(disk_info.vendor));
+        strlcpy(disk_info.model, disk_info_pb->model, sizeof(disk_info.model));
+        strlcpy(disk_info.serial, disk_info_pb->serial, sizeof(disk_info.serial));
+        strlcpy(disk_info.fw_rev, disk_info_pb->fw_rev, sizeof(disk_info.fw_rev));
+        if (disk_info_pb->has_device_type)
+            disk_info.device_type = disk_info_pb->device_type;
+        else
+            disk_info.device_type = 0;
 
+        if (disk_info_pb->ata && disk_info_pb->sas) {
+            printf("A disk can't be both ATA and SAS at the same time, skipping\n");
+            bad_disk = true;
+        } else if (disk_info_pb->ata) {
+            disk_info.ata.smart_supported = disk_info_pb->ata->smart_supported;
+            disk_info.ata.smart_ok = disk_info_pb->ata->smart_ok;
+        } else if (disk_info_pb->sas) {
+            disk_info.sas.smart_asc = disk_info_pb->sas->smart_asc;
+            disk_info.sas.smart_ascq = disk_info_pb->sas->smart_ascq;
+        } else {
+            printf("Not an ATA nor SAS disk, skipping\n");
+            bad_disk = true;
+        }
+
+        disksurvey__disk_info__free_unpacked(disk_info_pb, NULL);
+
+        /* Read the latency part */
+        if (offset+4 > statbuf.st_size) {
+            printf("Not enough data in the file to read the latency size, offset=%u size=%u\n", offset, (uint32_t)statbuf.st_size);
+            goto Exit;
+        }
+        item_size = ntohl(*(uint32_t*)(buf+offset));
+        offset += 4;
+        if (offset + item_size > statbuf.st_size) {
+            printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", offset, item_size, (uint32_t)statbuf.st_size);
+            goto Exit;
+        }
+        latency_pb = disksurvey__latency__unpack(NULL, item_size, buf+offset);
+        if (!latency_pb) {
+            printf("Failed to unpack disk survey latency data\n");
+            goto Exit;
+        }
+        offset += item_size;
+        // TODO: convert the latency part
+        disksurvey__latency__free_unpacked(latency_pb, NULL);
+
+        if (bad_disk) {
+            printf("Skipped a bad disk\n");
+            continue;
+        }
+
+        /* Both parts loaded, add the disk */
 		printf("Loaded disk data\n");
 		mgr.disk_list[i].disk.disk_info = disk_info;
+        mgr.disk_list[i].disk.latency = latency;
 		disk_list_append(i, &mgr.dead_head);
 		mgr.first_unused_entry = i+1;
 	}
 
 Exit:
+    munmap(buf, statbuf.st_size);
 	close(fd);
 }
 

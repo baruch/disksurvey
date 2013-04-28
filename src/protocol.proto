@@ -1,0 +1,54 @@
+package disksurvey;
+
+message DiskATA {
+    required bool smart_supported = 1;
+    required bool smart_ok = 2;
+}
+
+message DiskSAS {
+    required uint32 smart_asc = 1;
+    required uint32 smart_ascq = 2;
+}
+
+message DiskInfo {
+    required string vendor = 1;
+    required string model = 2;
+    required string serial = 3;
+    required string fw_rev = 4;
+    optional uint32 device_type = 5;
+    optional DiskATA ata = 6;
+    optional DiskSAS sas = 7;
+}
+
+/*
+    latency_summary:
+        top_latencies:
+            type: array
+            array_type:
+                type: double
+            len: NUM_TOP_LATENCIES
+        hist:
+            type: array
+            array_type:
+                type: uint16_t
+            len: LATENCY_RANGE_COUNT
+
+    latency:
+        cur_entry:
+            type: int
+        entries:
+            type: array
+            array_type:
+                type: latency_summary
+            len: 12*24*30
+*/
+
+message LatencyEntry {
+    repeated double top_latencies = 1 [packed=true];
+    repeated uint32 histogram = 2 [packed=true];
+}
+
+message Latency {
+    optional uint32 current_entry = 1;
+    repeated LatencyEntry entries = 2;
+}

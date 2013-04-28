@@ -50,6 +50,11 @@ class TypeUInt16(BaseType):
     def marshall_type(self):
         return '%u'
 
+class TypeUInt32(BaseType):
+    type_name = 'uint32_t'
+    def marshall_type(self):
+        return '%u'
+
 class TypeDouble(BaseType):
     type_name = 'double'
     def marshall_type(self):
@@ -100,6 +105,7 @@ class TypeString(BaseType):
 types_base = {
     'bool': TypeBool,
     'int': TypeInt,
+    'uint32_t': TypeUInt32,
     'uint16_t': TypeUInt16,
     'uint8_t': TypeUInt8,
     'double': TypeDouble,

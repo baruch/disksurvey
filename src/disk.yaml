@@ -92,7 +92,7 @@ struct:
         hist:
             type: array
             array_type:
-                type: uint16_t
+                type: uint32_t
             len: LATENCY_RANGE_COUNT
 
     latency:
