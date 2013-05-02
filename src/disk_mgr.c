@@ -215,6 +215,7 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 		    strcmp(new_disk_info->model, old_disk_info->model) == 0 &&
 			strcmp(new_disk_info->serial, old_disk_info->serial) == 0)
 		{
+            printf("Attaching to a previously seen disk\n");
 			disk_init(disk, new_disk_info, disk_scanner->sg_path);
 			disk->on_death = on_death;
 			disk_list_remove(disk_idx, &mgr.dead_head);
@@ -226,7 +227,7 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 	// This is a completely new disk, allocate a new one for it
 	int new_disk_idx = disk_list_get_unused();
 	if (new_disk_idx != -1) {
-		printf("adding idx=%d!\n", new_disk_idx);
+		printf("Adding a new disk at idx=%d!\n", new_disk_idx);
 		disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
 		disk_init(disk, new_disk_info, disk_scanner->sg_path);
 		disk->on_death = on_death;
@@ -637,23 +638,17 @@ static void disk_manager_load_fd(int fd)
 
     printf("Loading disk data version %u\n", version);
 
-    uint32_t offset = 4;
+    uint32_t offset = sizeof(version);
 	int i;
-	for (i = 0; i < MAX_DISKS; i++) {
+	for (i = 0; i < MAX_DISKS && offset < statbuf.st_size; i++) {
 		disk_info_t disk_info;
 		latency_t latency;
-        bool bad_disk = false;
 
         if (!disk_manager_load_disk_info(&disk_info, buf, &offset, statbuf.st_size))
-            bad_disk = true;
+            goto Exit;
 
         if (!disk_manager_load_latency(&latency, buf, &offset, statbuf.st_size))
-            bad_disk = true;
-
-        if (bad_disk) {
-            printf("Skipped a bad disk\n");
-            continue;
-        }
+            goto Exit;
 
         /* Both parts loaded, add the disk */
 		printf("Loaded disk data\n");
