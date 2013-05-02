@@ -499,14 +499,115 @@ static void disk_manager_init_mgr(void)
 	snprintf(mgr.state_file_name, sizeof(mgr.state_file_name), "./disksurvey.dat");
 }
 
-static void disk_manager_load(void)
+static bool disk_manager_load_latency(latency_t *latency, unsigned char *buf, uint32_t *offset, uint32_t buf_size)
 {
-	int fd = open(mgr.state_file_name, O_RDONLY);
-	if (fd < 0) {
-		printf("Failed to open state data: %m\n");
-		return;
-	}
+    Disksurvey__Latency *latency_pb = NULL;
+    uint32_t item_size;
 
+    /* Read the latency part */
+    if (*offset+4 > buf_size) {
+        printf("Not enough data in the file to read the latency size, offset=%u size=%u\n", *offset, buf_size);
+        return false;
+    }
+
+    item_size = ntohl(*(uint32_t*)(buf + *offset));
+    *offset += 4;
+    if (*offset + item_size > buf_size) {
+        printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", *offset, item_size, buf_size);
+        return false;
+    }
+    latency_pb = disksurvey__latency__unpack(NULL, item_size, buf + *offset);
+    if (!latency_pb) {
+        printf("Failed to unpack disk survey latency data\n");
+        return false;
+    }
+    *offset += item_size;
+
+    // convert the latency part
+    if (latency_pb->has_current_entry)
+        latency->cur_entry = latency_pb->current_entry;
+    else
+        latency->cur_entry = 0;
+
+    int k;
+    for (k = 0; k < latency_pb->n_entries; k++) {
+        int j;
+        Disksurvey__LatencyEntry *entry = latency_pb->entries[k];
+
+        int n_top_latencies = entry->n_top_latencies;
+        if (n_top_latencies > ARRAY_SIZE(latency->entries[0].top_latencies))
+            n_top_latencies = ARRAY_SIZE(latency->entries[0].top_latencies);
+        for (j = 0; j < n_top_latencies; j++) {
+            latency->entries[k].top_latencies[j] = entry->top_latencies[j];
+        }
+
+        int n_histogram = entry->n_histogram;
+        if (n_histogram > ARRAY_SIZE(latency->entries[0].hist))
+            n_histogram = ARRAY_SIZE(latency->entries[0].hist);
+        for (j = 0; j < n_histogram; j++) {
+            latency->entries[k].hist[j] = entry->histogram[j];
+        }
+    }
+
+    disksurvey__latency__free_unpacked(latency_pb, NULL);
+    return true;
+}
+
+static bool disk_manager_load_disk_info(disk_info_t *disk_info, unsigned char *buf, uint32_t *offset, uint32_t buf_size)
+{
+    bool bad_disk = false;
+    Disksurvey__DiskInfo *disk_info_pb = NULL;
+    uint32_t item_size;
+
+    /* Read the disk info part */
+    if (*offset+4 > buf_size) {
+        // This ends the last data, exit silently
+        return false;
+    }
+    item_size = ntohl(*(uint32_t*)(buf + *offset));
+    *offset += 4;
+    if (*offset + item_size > buf_size) {
+        printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", *offset, item_size, buf_size);
+        return false;
+    }
+    disk_info_pb = disksurvey__disk_info__unpack(NULL, item_size, buf + *offset);
+    if (!disk_info_pb) {
+        printf("Failed to unpack disk survey disk info data\n");
+        return false;
+    }
+    *offset += item_size;
+
+    strlcpy(disk_info->vendor, disk_info_pb->vendor, sizeof(disk_info->vendor));
+    strlcpy(disk_info->model, disk_info_pb->model, sizeof(disk_info->model));
+    strlcpy(disk_info->serial, disk_info_pb->serial, sizeof(disk_info->serial));
+    strlcpy(disk_info->fw_rev, disk_info_pb->fw_rev, sizeof(disk_info->fw_rev));
+    if (disk_info_pb->has_device_type)
+        disk_info->device_type = disk_info_pb->device_type;
+    else
+        disk_info->device_type = 0;
+
+    if (disk_info_pb->ata && disk_info_pb->sas) {
+        printf("A disk can't be both ATA and SAS at the same time, skipping\n");
+        bad_disk = true;
+    } else if (disk_info_pb->ata) {
+        disk_info->disk_type = DISK_TYPE_ATA;
+        disk_info->ata.smart_supported = disk_info_pb->ata->smart_supported;
+        disk_info->ata.smart_ok = disk_info_pb->ata->smart_ok;
+    } else if (disk_info_pb->sas) {
+        disk_info->disk_type = DISK_TYPE_SAS;
+        disk_info->sas.smart_asc = disk_info_pb->sas->smart_asc;
+        disk_info->sas.smart_ascq = disk_info_pb->sas->smart_ascq;
+    } else {
+        printf("Not an ATA nor SAS disk, skipping\n");
+        bad_disk = true;
+    }
+
+    disksurvey__disk_info__free_unpacked(disk_info_pb, NULL);
+    return !bad_disk;
+}
+
+static void disk_manager_load_fd(int fd)
+{
     struct stat statbuf;
     int ret = fstat(fd, &statbuf);
     if (ret < 0) {
@@ -537,102 +638,17 @@ static void disk_manager_load(void)
     printf("Loading disk data version %u\n", version);
 
     uint32_t offset = 4;
-	uint32_t item_size;
 	int i;
 	for (i = 0; i < MAX_DISKS; i++) {
-        Disksurvey__DiskInfo *disk_info_pb = NULL;
-        Disksurvey__Latency *latency_pb = NULL;
 		disk_info_t disk_info;
 		latency_t latency;
         bool bad_disk = false;
 
-        /* Read the disk info part */
-        if (offset+4 > statbuf.st_size) {
-            // This ends the last data, exit silently
-            goto Exit;
-        }
-        item_size = ntohl(*(uint32_t*)(buf+offset));
-        offset += 4;
-        if (offset + item_size > statbuf.st_size) {
-            printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", offset, item_size, (uint32_t)statbuf.st_size);
-            goto Exit;
-        }
-        disk_info_pb = disksurvey__disk_info__unpack(NULL, item_size, buf+offset);
-        if (!disk_info_pb) {
-            printf("Failed to unpack disk survey disk info data\n");
-            goto Exit;
-        }
-        offset += item_size;
-
-        strlcpy(disk_info.vendor, disk_info_pb->vendor, sizeof(disk_info.vendor));
-        strlcpy(disk_info.model, disk_info_pb->model, sizeof(disk_info.model));
-        strlcpy(disk_info.serial, disk_info_pb->serial, sizeof(disk_info.serial));
-        strlcpy(disk_info.fw_rev, disk_info_pb->fw_rev, sizeof(disk_info.fw_rev));
-        if (disk_info_pb->has_device_type)
-            disk_info.device_type = disk_info_pb->device_type;
-        else
-            disk_info.device_type = 0;
-
-        if (disk_info_pb->ata && disk_info_pb->sas) {
-            printf("A disk can't be both ATA and SAS at the same time, skipping\n");
+        if (!disk_manager_load_disk_info(&disk_info, buf, &offset, statbuf.st_size))
             bad_disk = true;
-        } else if (disk_info_pb->ata) {
-            disk_info.ata.smart_supported = disk_info_pb->ata->smart_supported;
-            disk_info.ata.smart_ok = disk_info_pb->ata->smart_ok;
-        } else if (disk_info_pb->sas) {
-            disk_info.sas.smart_asc = disk_info_pb->sas->smart_asc;
-            disk_info.sas.smart_ascq = disk_info_pb->sas->smart_ascq;
-        } else {
-            printf("Not an ATA nor SAS disk, skipping\n");
+
+        if (!disk_manager_load_latency(&latency, buf, &offset, statbuf.st_size))
             bad_disk = true;
-        }
-
-        disksurvey__disk_info__free_unpacked(disk_info_pb, NULL);
-
-        /* Read the latency part */
-        if (offset+4 > statbuf.st_size) {
-            printf("Not enough data in the file to read the latency size, offset=%u size=%u\n", offset, (uint32_t)statbuf.st_size);
-            goto Exit;
-        }
-        item_size = ntohl(*(uint32_t*)(buf+offset));
-        offset += 4;
-        if (offset + item_size > statbuf.st_size) {
-            printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", offset, item_size, (uint32_t)statbuf.st_size);
-            goto Exit;
-        }
-        latency_pb = disksurvey__latency__unpack(NULL, item_size, buf+offset);
-        if (!latency_pb) {
-            printf("Failed to unpack disk survey latency data\n");
-            goto Exit;
-        }
-        offset += item_size;
-        // convert the latency part
-        if (latency_pb->has_current_entry)
-            latency.cur_entry = latency_pb->current_entry;
-        else
-            latency.cur_entry = 0;
-
-        int k;
-        for (k = 0; k < latency_pb->n_entries; k++) {
-            int j;
-            Disksurvey__LatencyEntry *entry = latency_pb->entries[k];
-
-            int n_top_latencies = entry->n_top_latencies;
-            if (n_top_latencies > ARRAY_SIZE(latency.entries[0].top_latencies))
-                n_top_latencies = ARRAY_SIZE(latency.entries[0].top_latencies);
-            for (j = 0; j < n_top_latencies; j++) {
-                latency.entries[i].top_latencies[j] = entry->top_latencies[j];
-            }
-
-            int n_histogram = entry->n_histogram;
-            if (n_histogram > ARRAY_SIZE(latency.entries[0].hist))
-                n_histogram = ARRAY_SIZE(latency.entries[0].hist);
-            for (j = 0; j < n_histogram; j++) {
-                latency.entries[i].hist[j] = entry->histogram[j];
-            }
-        }
-
-        disksurvey__latency__free_unpacked(latency_pb, NULL);
 
         if (bad_disk) {
             printf("Skipped a bad disk\n");
@@ -649,6 +665,18 @@ static void disk_manager_load(void)
 
 Exit:
     munmap(buf, statbuf.st_size);
+}
+
+static void disk_manager_load(void)
+{
+	int fd = open(mgr.state_file_name, O_RDONLY);
+	if (fd < 0) {
+		printf("Failed to open state data: %m\n");
+		return;
+	}
+
+    disk_manager_load_fd(fd);
+
 	close(fd);
 }
 
