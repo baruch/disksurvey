@@ -1,5 +1,7 @@
 *.o
 .*.d
+.ninja*
+build.ninja
 .redo
 .*.swp
 disksurvey
