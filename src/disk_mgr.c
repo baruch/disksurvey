@@ -434,7 +434,7 @@ void disk_manager_rescan(void)
 		return;
 	}
 
-	printf("Found %d devices\n", globbuf.gl_pathc);
+	printf("Found %d devices\n", (int)globbuf.gl_pathc);
 
 	int glob_idx;
 
