@@ -9,7 +9,7 @@ static double histogram_boundary[] = LATENCY_RANGES;
 
 void latency_init(latency_t *latency)
 {
-    memset(latency, 0, sizeof(latency));
+    memset(latency, 0, sizeof(*latency));
 }
 
 static void update_top_latencies(latency_summary_t *entry, double val)
@@ -56,7 +56,7 @@ void latency_tick(latency_t *latency)
     latency->cur_entry++;
 
     latency_summary_t* entry = &latency->entries[latency->cur_entry];
-    memset(entry, 0, sizeof(entry));
+    memset(entry, 0, sizeof(*entry));
 }
 
 void latency_save(latency_t *latency, FILE *fd)
