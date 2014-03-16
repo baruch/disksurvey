@@ -6,7 +6,6 @@ build.ninja
 .*.swp
 disksurvey
 tags
-libebb.a
 src/web_app.c
 web/app.inc
 web/app.js

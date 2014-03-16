@@ -1,3 +1,0 @@
-[submodule "libebb"]
-	path = libebb
-	url = git://github.com/grundprinzip/libebb.git

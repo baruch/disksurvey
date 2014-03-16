@@ -80,7 +80,6 @@ def all_files(d):
 n.build('src/web_app.c', 'concat', ['web/app.inc', 'src/web.c'])
 
 lib = []
-lib += n.build('libebb/libebb.a', 'make', implicit=all_files('libebb'), variables=[('dir', 'libebb'), ('file', 'libebb.a')])
 
 objs = []
 for source in srcs:
