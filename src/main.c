@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <signal.h>
 
 static wire_thread_t wire_thread_main;
 static wire_t signal_task;
@@ -18,7 +19,7 @@ static wire_t signal_task;
 static void handle_shutdown_signal(void)
 {
 	printf("Terminating the process\n");
-	//web_stop();
+	web_stop();
 	disk_manager_stop();
 	/* Now we return to the loop to let everything unwind in an orderly fashion, all IOs need to return */
 }
@@ -98,7 +99,7 @@ int main()
 
 	register_shutdown_handler();
 	disk_manager_init();
-	//web_init(5001);
+	web_init(5001);
 
 	wire_thread_run();
 	return 0;

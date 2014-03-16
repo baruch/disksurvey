@@ -1,5 +1,5 @@
 #!/bin/bash
 
-sed -e '1istatic char app_css[] = "HTTP/1.1 200 OK\\r\\nContent-Type: text/css\\r\\n\\r\\n"' -e '$a;' -e 's/\\/\\\\/g;s/"/\\"/g;s/  /\\t/g;s/^/"/;s/$/\\n"/' "$1"
-sed -e '1istatic char app_js[] = "HTTP/1.1 200 OK\\r\\nContent-Type: text/javascript\\r\\n\\r\\n"' -e '$a;' -e 's/\\/\\\\/g;s/"/\\"/g;s/  /\\t/g;s/^/"/;s/$/\\n"/' "$2"
-sed -e '1istatic char index_html[] = "HTTP/1.1 200 OK\\r\\nContent-Type: text/html\\r\\n\\r\\n"' -e '$a;' -e 's/\\/\\\\/g;s/"/\\"/g;s/  /\\t/g;s/^/"/;s/$/\\n"/' "$3"
+sed -e '1istatic char app_css[] = ' -e '$a;' -e 's/\\/\\\\/g;s/"/\\"/g;s/  /\\t/g;s/^/"/;s/$/\\n"/' "$1"
+sed -e '1istatic char app_js[] = ' -e '$a;' -e 's/\\/\\\\/g;s/"/\\"/g;s/  /\\t/g;s/^/"/;s/$/\\n"/' "$2"
+sed -e '1istatic char index_html[] = ' -e '$a;' -e 's/\\/\\\\/g;s/"/\\"/g;s/  /\\t/g;s/^/"/;s/$/\\n"/' "$3"

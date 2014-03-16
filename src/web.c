@@ -2,6 +2,17 @@
 #include "disk_mgr.h"
 #include "util.h"
 
+#include "wire.h"
+#include "wire_pool.h"
+#include "wire_fd.h"
+#include "wire_wait.h"
+#include "wire.h"
+#include "wire_fd.h"
+#include "wire_pool.h"
+#include "wire_stack.h"
+#include "macros.h"
+#include "http_parser.h"
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,103 +20,105 @@
 #include <unistd.h>
 #include <assert.h>
 #include <string.h>
+#include <fcntl.h>
+#include <memory.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
 
-#include <ev.h>
-#include "../libebb/ebb.h"
 
-#define CONNECTION_BUF_SIZE 128*1024
-static int c = 0;
+#define CONNECTION_BUF_SIZE 8192
 
 struct web {
-	ebb_server server;
+	wire_pool_t web_pool;
+	wire_t accept_wire;
+	wire_wait_t close_wait;
 };
 static struct web web;
 
-struct url {
-	const char *path;
-	void (*cb)(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query);
-};
-
-struct request_data {
-	ebb_connection *connection;
+struct web_data {
+	int fd;
+	wire_fd_state_t fd_state;
+	int method;
 	char path[256];
-	char uri[256];
 	char query_string[256];
 };
 
-static inline void serve_var(ebb_connection *connection, const char *content)
+struct url {
+	const char *path;
+	int (*cb)(http_parser *parser);
+};
+
+static int buf_write(wire_fd_state_t *fd_state, const char *buf, int len)
 {
-	ebb_connection_write(connection, content, strlen(content), ebb_connection_schedule_close);
+	int sent = 0;
+	do {
+		int ret = write(fd_state->fd, buf + sent, len - sent);
+		if (ret == 0)
+			return -1;
+		else if (ret > 0) {
+			sent += ret;
+			if (sent == len)
+				return 0;
+		} else {
+			// Error
+			if (errno != EINTR && errno != EAGAIN)
+				return -1;
+		}
+
+		wire_fd_mode_write(fd_state);
+		wire_fd_wait(fd_state);
+		// TODO: Need to handle timeouts here as well
+	} while (1);
 }
 
-#define SERVE_VAR(name) static void serve_##name(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query) \
+static int response_write(http_parser *parser, int code, const char *title, const char *content_type, const char *body, unsigned body_len)
+{
+	char hdr[512];
+	int hdr_len;
+	hdr_len = snprintf(hdr, sizeof(hdr), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\n%s\r\n",
+			code, title,
+			content_type,
+			body_len,
+			!http_should_keep_alive(parser) ? "Connection: close\r\n" : "");
+
+	struct web_data *d = parser->data;
+	buf_write(&d->fd_state, hdr, hdr_len);
+	buf_write(&d->fd_state, body, body_len);
+
+	return 0;
+}
+
+#define SERVE_VAR(name, content_type) static int serve_##name(http_parser *parser) \
 { \
-	serve_var(connection, name); \
+	return response_write(parser, 200, "OK", content_type, name, strlen(name)); \
 }
 
-SERVE_VAR(app_js)
-SERVE_VAR(app_css)
-SERVE_VAR(index_html)
+SERVE_VAR(app_js, "text/javascript")
+SERVE_VAR(app_css, "text/css")
+SERVE_VAR(index_html, "text/html")
 
-static char *connection_data(ebb_connection *connection)
+static int api_disk_list(http_parser *parser)
 {
-	if (!connection->data) {
-		connection->data = malloc(CONNECTION_BUF_SIZE);
-		assert(connection->data);
-	}
-
-	return connection->data;
-}
-
-static void api_disk_list(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query)
-{
-	char *buf = connection_data(connection);
-	int hdr_len = snprintf(buf, CONNECTION_BUF_SIZE, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %-10d\r\n\r\n", 0);
-	int written = disk_manager_disk_list_json(buf + hdr_len, CONNECTION_BUF_SIZE - hdr_len);
+	char buf[CONNECTION_BUF_SIZE];
+	int written = disk_manager_disk_list_json(buf, CONNECTION_BUF_SIZE);
 	if (written >= 0) {
-		char hdr[hdr_len+1];
-		snprintf(hdr, hdr_len+1, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %-10d\r\n\r\n", written-1);
-		memcpy(buf, hdr, hdr_len);
-		ebb_connection_write(connection, buf, hdr_len + written, ebb_connection_schedule_close);
+		return response_write(parser, 200, "OK", "application/json", buf, written-1);
 	} else {
 		printf("ERROR: space insufficient\n");
-		static const char msg[] = "HTTP/1.1 500 ERROR\r\n";
-		ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
+		static const char *msg = "Insufficient buffer space";
+		response_write(parser, 500, msg, "text/plain", msg, strlen(msg));
+		return -1;
 	}
 }
 
-static void rescan_disks(ebb_connection *connection, ebb_request *request, const char *path, const char *uri, const char *query)
+static int rescan_disks(http_parser *parser)
 {
-	static const char msg[] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nrescanned\n";
-	ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
+	static const char *msg = "rescanned\n";
+	int ret = response_write(parser, 200, "OK", "text/plain", msg, strlen(msg));
 	disk_manager_rescan();
-}
-
-void on_close(ebb_connection *connection)
-{
-  free(connection->data);
-  free(connection);
-}
-
-static void request_path(ebb_request *request, const char *at, size_t len)
-{
-	struct request_data *data = request->data;
-	strncpy(data->path, at, MIN(len, sizeof(data->path)));
-	data->path[sizeof(data->path)-1] = 0;
-}
-
-static void request_uri(ebb_request *request, const char *at, size_t len)
-{
-	struct request_data *data = request->data;
-	strncpy(data->uri, at, MIN(len, sizeof(data->uri)));
-	data->uri[sizeof(data->uri)-1] = 0;
-}
-
-static void request_query_string(ebb_request *request, const char *at, size_t len)
-{
-	struct request_data *data = request->data;
-	strncpy(data->query_string, at, MIN(len, sizeof(data->query_string)));
-	data->query_string[sizeof(data->query_string)-1] = 0;
+	return ret;
 }
 
 static struct url urls[] = {
@@ -115,74 +128,286 @@ static struct url urls[] = {
 	{"/rescan", rescan_disks},
 	{"/api/disks", api_disk_list},
 };
-static void request_complete(ebb_request *request)
-{
-	struct request_data *data = request->data;
-	ebb_connection *connection = data->connection;
-	int i;
-	bool handled = false;
 
-	printf("Method: %d\nPath: %s\nURI: %s\nQuery: %s\n", request->method, data->path, data->uri, data->query_string);
+static void set_nonblock(int fd)
+{
+	int ret = fcntl(fd, F_GETFL);
+	if (ret < 0)
+		return;
+
+	fcntl(fd, F_SETFL, ret | O_NONBLOCK);
+}
+
+static void set_reuse(int fd)
+{
+	int so_reuseaddr = 1;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &so_reuseaddr, sizeof(so_reuseaddr));
+}
+
+static int socket_setup(unsigned short port)
+{
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 1) {
+		perror("Failed to create socket");
+		return -1;
+	}
+
+	set_nonblock(fd);
+	set_reuse(fd);
+
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+
+	int ret = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
+	if (ret < 0) {
+		perror("Failed to bind to socket");
+		close(fd);
+		return -1;
+	}
+
+	ret = listen(fd, 100);
+	if (ret < 0) {
+		perror("failed to listen to port");
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+static int on_message_begin(http_parser *parser)
+{
+	printf("Message begin\n");
+
+	struct web_data *d = parser->data;
+
+	d->path[0] = 0;
+	d->query_string[0] = 0;
+
+	return 0;
+}
+
+static int on_headers_complete(http_parser *parser)
+{
+	struct web_data *d = parser->data;
+	d->method = parser->method;
+	printf("Headers complete: HTTP/%d.%d %s\n", parser->http_major, parser->http_minor, http_method_str(parser->method));
+	return 0;
+}
+
+static int on_message_complete(http_parser *parser)
+{
+	printf("message complete\n");
+	struct web_data *d = parser->data;
+
+	int i;
+
+	printf("Method: %d\nPath: %s\nQuery: %s\n", d->method, d->path, d->query_string);
 
 	for (i = 0; i < ARRAY_SIZE(urls); i++) {
-		if (strcasecmp(urls[i].path, data->path) == 0) {
-			urls[i].cb(connection, request, data->path, data->uri, data->query_string);
+		if (strcasecmp(urls[i].path, d->path) == 0) {
+			urls[i].cb(parser);
 			printf("Request succeeded\n");
-			handled = true;
-			break;
+			return 0;
 		}
 	}
-	if (!handled) {
-		static const char msg[] = "HTTP/1.1 404 NOT FOUND\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nnot found\n";
-		ebb_connection_write(connection, msg, strlen(msg), ebb_connection_schedule_close);
-		printf("Request not found\n");
+
+	static const char *msg = "Not Found";
+	return response_write(parser, 404, msg, "text/plain", msg, strlen(msg));
+}
+
+static int on_url(http_parser *parser, const char *at, size_t length)
+{
+	printf("URL: %.*s\n", (int)length, at);
+
+	struct web_data *d = parser->data;
+	struct http_parser_url url;
+	int ret = http_parser_parse_url(at, length, 0, &url);
+	if (ret != 0) {
+		printf("URL parsing failed\n");
+		return -1;
 	}
 
-	free(request->data);
-	free(request);
+	if (url.field_set & (1<<UF_PATH)) {
+		memcpy(d->path, at + url.field_data[UF_PATH].off, url.field_data[UF_PATH].len);
+		d->path[url.field_data[UF_PATH].len] = 0;
+	} else {
+		printf("Missing path in the url, baffled and dazed!\n");
+		return -1;
+	}
+
+	if (url.field_set & (1<<UF_QUERY)) {
+		memcpy(d->query_string, at + url.field_data[UF_QUERY].off, url.field_data[UF_QUERY].len);
+		d->query_string[url.field_data[UF_QUERY].len] = 0;
+	}
+
+	return 0;
 }
 
-static ebb_request* new_request(ebb_connection *connection)
+static int on_status(http_parser *parser, const char *at, size_t length)
 {
-	struct request_data *data = calloc(sizeof(struct request_data), 1);
-	data->connection = connection;
-
-	ebb_request *request = malloc(sizeof(ebb_request));
-	ebb_request_init(request);
-	request->data = data;
-	request->on_complete = request_complete;
-	request->on_path = request_path;
-	request->on_uri = request_uri;
-	request->on_query_string = request_query_string;
-	return request;
+	UNUSED(parser);
+	printf("STATUS: %.*s\n", (int)length, at);
+	return 0;
 }
 
-ebb_connection* new_connection(ebb_server *server, struct sockaddr_in *addr)
+static int on_header_field(http_parser *parser, const char *at, size_t length)
 {
-  ebb_connection *connection = malloc(sizeof(ebb_connection));
-  if(connection == NULL) {
-    return NULL;
-  }
-
-  ebb_connection_init(connection);
-  connection->new_request = new_request;
-  connection->on_close = on_close;
-  
-  printf("connection: %d\n", c++);
-  return connection;
+	UNUSED(parser);
+	printf("HEADER FIELD: %.*s\n", (int)length, at);
+	return 0;
 }
 
-void web_init(struct ev_loop *loop, int port)
+static int on_header_value(http_parser *parser, const char *at, size_t length)
+{
+	UNUSED(parser);
+	printf("HEADER VALUE: %.*s\n", (int)length, at);
+	return 0;
+}
+
+static int on_body(http_parser *parser, const char *at, size_t length)
+{
+	UNUSED(parser);
+	printf("BODY: %.*s\n", (int)length, at);
+	return 0;
+}
+
+static const struct http_parser_settings parser_settings = {
+	.on_message_begin = on_message_begin,
+	.on_headers_complete = on_headers_complete,
+	.on_message_complete = on_message_complete,
+
+	.on_url = on_url,
+	.on_status = on_status,
+	.on_header_field = on_header_field,
+	.on_header_value = on_header_value,
+	.on_body = on_body,
+};
+
+static void web_run(void *arg)
+{
+	struct web_data d = {
+		.fd = (long int)arg,
+	};
+	http_parser parser;
+
+	wire_fd_mode_init(&d.fd_state, d.fd);
+	wire_fd_mode_read(&d.fd_state);
+
+	set_nonblock(d.fd);
+
+	http_parser_init(&parser, HTTP_REQUEST);
+	parser.data = &d;
+
+	char buf[4096];
+	do {
+		buf[0] = 0;
+		int received = read(d.fd, buf, sizeof(buf));
+		printf("Received: %d %d\n", received, errno);
+		if (received == 0) {
+			/* Fall-through, tell parser about EOF */
+			printf("Received EOF\n");
+		} else if (received < 0) {
+			printf("Error\n");
+			if (errno == EINTR || errno == EAGAIN) {
+				printf("Waiting\n");
+				/* Nothing received yet, wait for it */
+				// TODO: employ a timeout here to exit if no input is received
+				wire_fd_wait(&d.fd_state);
+				printf("Done waiting\n");
+				continue;
+			} else {
+				printf("breaking out\n");
+				break;
+			}
+		}
+
+		printf("Processing %d\n", (int)received);
+		size_t processed = http_parser_execute(&parser, &parser_settings, buf, received);
+		if (parser.upgrade) {
+			/* Upgrade not supported yet */
+			printf("Upgrade not supported, bailing out\n");
+			break;
+		} else if (received == 0) {
+			// At EOF, exit now
+			printf("Received EOF\n");
+			break;
+		} else if (processed != (size_t)received) {
+			// Error in parsing
+			printf("Not everything was parsed, error is likely, bailing out.\n");
+			break;
+		}
+	} while (1);
+
+	wire_fd_mode_none(&d.fd_state);
+	close(d.fd);
+}
+
+// ---
+
+static void web_accept(void *arg)
+{
+        int port = (long int)arg;
+        int fd = socket_setup(port);
+        if (fd < 0)
+                return;
+
+		unsigned web_id = 0;
+        wire_fd_state_t fd_state;
+        wire_fd_mode_init(&fd_state, fd);
+        wire_fd_mode_read(&fd_state);
+
+		wire_wait_list_t wait_list;
+		wire_wait_list_init(&wait_list);
+		wire_wait_init(&web.close_wait);
+		wire_wait_chain(&wait_list, &web.close_wait);
+		wire_fd_wait_list_chain(&wait_list, &fd_state);
+
+		printf("listening on port %d\n", port);
+
+        while (1) {
+                wire_list_wait(&wait_list);
+
+				if (web.close_wait.triggered) {
+					break;
+				}
+
+                int new_fd = accept(fd, NULL, NULL);
+                if (new_fd >= 0) {
+                        printf("New connection: %u %d\n", web_id, new_fd);
+                        char name[32];
+                        snprintf(name, sizeof(name), "web %u %d", web_id++, new_fd);
+                        wire_t *task = wire_pool_alloc(&web.web_pool, name, web_run, (void*)(long int)new_fd);
+                        if (!task) {
+                                printf("Web server is busy, sorry\n");
+								// TODO: Send something into the connection
+                                close(new_fd);
+                        }
+                } else {
+                        if (errno != EINTR && errno != EAGAIN) {
+                                perror("Error accepting from listening socket");
+                                break;
+                        }
+                }
+        }
+
+		wire_fd_mode_none(&fd_state);
+		close(fd);
+		printf("Web interface shutdown\n");
+}
+
+void web_init(int port)
 {
 	memset(&web, 0, sizeof(web));
-	ebb_server_init(&web.server, loop); 
-	web.server.new_connection = new_connection;
 
-	printf("listening on port %d\n", port);
-	ebb_server_listen_on_port(&web.server, port);
+	wire_pool_init(&web.web_pool, NULL, 16, CONNECTION_BUF_SIZE*2);
+	wire_init(&web.accept_wire, "web accept", web_accept, (void*)(long int)port, WIRE_STACK_ALLOC(4096));
 }
 
 void web_stop(void)
 {
-	ebb_server_unlisten(&web.server);
+	printf("Shutting down the web interface\n");
+	wire_wait_resume(&web.close_wait);
 }
