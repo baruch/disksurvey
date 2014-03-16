@@ -5,6 +5,13 @@
 #include "system_id.h"
 #include "protocol.pb-c.h"
 
+#include "wire.h"
+#include "wire_fd.h"
+#include "wire_stack.h"
+#include "wire_wait.h"
+
+#include <sys/timerfd.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <sys/mman.h>
 #include <ctype.h>
@@ -29,20 +36,22 @@ struct disk_state {
 };
 
 struct disk_mgr {
-	struct ev_loop *loop;
-	ev_timer periodic_rescan_timer;
-	ev_timer tur_timer;
-	ev_timer five_min_timer;
-	ev_timer stop_timer;
-	ev_async cleanup_dead_disks;
-	ev_signal hup_signal;
+	wire_wait_t wait_rescan;
+	wire_wait_t wait_tur;
+	wire_wait_t wait_five_min;
+	wire_t task_rescan;
+	wire_t task_tur;
+	wire_t task_five_min_timer;
+	wire_t task_stop;
+	wire_t task_dead_disk_reaper;
+	wire_pool_t wire_pool;
 
 	system_identifier_t system_id;
+	int active;
 	int alive_head;
 	int dead_head;
 	int first_unused_entry;
 	struct disk_state disk_list[MAX_DISKS];
-	disk_scanner_t disk_scan_list[MAX_SCAN_DISKS];
 	char state_file_name[256];
 };
 static struct disk_mgr mgr;
@@ -138,7 +147,7 @@ int disk_manager_disk_list_json(char *buf, int len)
 	return orig_len - len;
 }
 
-static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int revents)
+static void cleanup_dead_disks(struct disk_mgr *m)
 {
 	printf("Cleanup dead disks started\n");
 	bool found = false;
@@ -149,25 +158,30 @@ static void cleanup_dead_disks(struct ev_loop *loop, ev_async *watcher, int reve
 
 		// since we modify the list, we can't do it in the loop
 		for_active_disks(disk_idx) {
-			if (mgr.disk_list[disk_idx].died) {
+			if (m->disk_list[disk_idx].died) {
 				found = true;
 				break;
 			}
 		}
 
 		if (found) {
-			mgr.disk_list[disk_idx].died = false;
+			m->disk_list[disk_idx].died = false;
 
-			disk_list_remove(disk_idx, &mgr.alive_head);
-			disk_list_append(disk_idx, &mgr.dead_head);
-
-			// TODO: When cleaning a dead disk, keep the useful info in it for a while, it may yet return
-			disk_t *disk = &mgr.disk_list[disk_idx].disk;
-			printf("Cleaning dead disk %p\n", disk);
-			disk_cleanup(disk);
+			disk_list_remove(disk_idx, &m->alive_head);
+			disk_list_append(disk_idx, &m->dead_head);
 		}
 	} while (found);
 	printf("Cleanup dead disks finished\n");
+}
+
+static void task_dead_disk_reaper(void *arg)
+{
+	struct disk_mgr *m = arg;
+
+	while (1) {
+		cleanup_dead_disks(m);
+		wire_suspend();
+	}
 }
 
 static void on_death(disk_t *disk)
@@ -175,7 +189,7 @@ static void on_death(disk_t *disk)
 	struct disk_state *state = container_of(disk, struct disk_state, disk);
 	state->died = true;
 	printf("Marking disk %p as dead for cleanup\n", disk);
-	ev_async_send(mgr.loop, &mgr.cleanup_dead_disks);
+	wire_resume(&mgr.task_dead_disk_reaper);
 }
 
 static bool disk_manager_is_active(const char *dev)
@@ -191,13 +205,8 @@ static bool disk_manager_is_active(const char *dev)
 	return false;
 }
 
-static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
+static void disk_mgr_scan_done(disk_scanner_t *disk_scanner)
 {
-	if (!disk_scanner->success) {
-		printf("Error while scanning device %s\n", disk_scanner->sg_path);
-		return;
-	}
-
 	disk_info_t *new_disk_info = &disk_scanner->disk_info;
 
 	if (new_disk_info->device_type != SCSI_DEV_TYPE_BLOCK) {
@@ -216,7 +225,7 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 			strcmp(new_disk_info->serial, old_disk_info->serial) == 0)
 		{
             printf("Attaching to a previously seen disk\n");
-			disk_init(disk, new_disk_info, disk_scanner->sg_path);
+			disk_init(disk, new_disk_info, disk_scanner->sg_path, &mgr.wire_pool);
 			disk->on_death = on_death;
 			disk_list_remove(disk_idx, &mgr.dead_head);
 			disk_list_append(disk_idx, &mgr.alive_head);
@@ -229,7 +238,7 @@ static void disk_mgr_scan_done_cb(disk_scanner_t *disk_scanner)
 	if (new_disk_idx != -1) {
 		printf("Adding a new disk at idx=%d!\n", new_disk_idx);
 		disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
-		disk_init(disk, new_disk_info, disk_scanner->sg_path);
+		disk_init(disk, new_disk_info, disk_scanner->sg_path, &mgr.wire_pool);
 		disk->on_death = on_death;
 		disk_list_append(new_disk_idx, &mgr.alive_head);
 	} else {
@@ -405,7 +414,7 @@ Exit:
  * only impact is the copy-on-write that will be needed by the parent when it
  * modifies data but due to the normal rate of work this shouldn't be a big impact.
  */
-static void disk_manager_save_state(void)
+void disk_manager_save_state(void)
 {
 	printf("Forking to save state\n");
 	pid_t pid = fork();
@@ -421,7 +430,7 @@ static void disk_manager_save_state(void)
 	}
 }
 
-void disk_manager_rescan(void)
+void disk_manager_rescan_internal(struct disk_mgr *m)
 {
 	int ret;
 	glob_t globbuf = { 0, NULL, 0 };
@@ -447,57 +456,184 @@ void disk_manager_rescan(void)
 			continue;
 		}
 
-		int disk_scanner_idx;
-		for (disk_scanner_idx = 0; disk_scanner_idx < MAX_SCAN_DISKS; disk_scanner_idx++) {
-			if (!disk_scanner_active(&mgr.disk_scan_list[disk_scanner_idx]))
-				break;
-		}
-		if (disk_scanner_idx == MAX_SCAN_DISKS) {
-			printf("No space to scan a new disk, will wait for next rescan\n");
+		disk_scanner_t disk_scan;
+		bool success = disk_scanner_inquiry(&disk_scan, dev);
+		if (!success) {
+			printf("Error while scanning device %s\n", disk_scan.sg_path);
 		} else {
-			disk_scanner_inquiry(&mgr.disk_scan_list[disk_scanner_idx], dev, disk_mgr_scan_done_cb);
+			disk_mgr_scan_done(&disk_scan);
 		}
 	}
 }
 
-static void rescan_cb(struct ev_loop *loop, ev_timer *watcher, int revents)
+void disk_manager_rescan(void)
 {
-	disk_manager_rescan();
+	wire_wait_resume(&mgr.wait_rescan);
 }
 
-static void tur_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
+static void task_rescan(void *arg)
 {
-	int disk_idx;
-	for_active_disks(disk_idx) {
-		disk_tur(&mgr.disk_list[disk_idx].disk);
+	struct disk_mgr *m = arg;
+	wire_wait_list_t wait_list;
+
+	wire_wait_list_init(&wait_list);
+	wire_wait_init(&m->wait_rescan);
+	wire_wait_chain(&wait_list, &m->wait_rescan);
+
+	while (m->active) {
+		disk_manager_rescan_internal(m);
+		if (!m->active)
+			break;
+		wire_wait_reset(&m->wait_rescan);
+		wire_list_wait(&wait_list);
 	}
 }
 
-static void five_min_tick_timer(struct ev_loop *loop, ev_timer *watcher, int revents)
+static int timer_monotonic(int msecs, wire_fd_state_t *fd_state)
 {
-	int disk_idx;
-	for_active_disks(disk_idx) {
-		disk_tick(&mgr.disk_list[disk_idx].disk);
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC|TFD_NONBLOCK);
+	if (fd < 0) {
+		printf("Failed to setup timerfd: %m\n");
+		return -1;
 	}
 
-	disk_manager_save_state();
+	struct itimerspec timer = {
+		.it_value = { .tv_sec = msecs / 1000, .tv_nsec = (msecs % 1000) * 1000000 },
+	};
+	timer.it_interval = timer.it_value;
+
+	int ret = timerfd_settime(fd, 0, &timer, NULL);
+	if (ret < 0) {
+		close(fd);
+		return -1;
+	}
+
+	wire_fd_mode_init(fd_state, fd);
+	wire_fd_mode_read(fd_state);
+
+	return fd;
 }
 
-static void handle_sighup(struct ev_loop *loop, ev_signal *watcher, int revents)
+static int timer_read(wire_fd_state_t *fd_state)
 {
-	disk_manager_save_state();
+	if (!fd_state->wait.triggered)
+		return 0;
+
+	wire_wait_reset(&fd_state->wait);
+
+	uint64_t timer_val = 0;
+	int ret = read(fd_state->fd, &timer_val, sizeof(timer_val));
+	if (ret < (int)sizeof(timer_val)) {
+		if (errno == EAGAIN)
+			return 0; // Wake up not timer related
+		perror("Error reading from timerfd");
+		return -1;
+	}
+
+	if (timer_val > 0) {
+		ret = 0;
+		return 1;
+	}
+
+	return 0;
 }
 
-static void disk_manager_init_mgr(void)
+static void timer_close(wire_fd_state_t *fd_state)
 {
-	// Initialize the disk list
-	mgr.first_unused_entry = 0;
+	wire_fd_mode_none(fd_state);
+	close(fd_state->fd);
+}
 
-	// Initialize the heads
-	mgr.alive_head = -1;
-	mgr.dead_head = -1;
+static void task_tur(void *arg)
+{
+	struct disk_mgr *m = arg;
+	wire_fd_state_t fd_state;
+	wire_wait_list_t wait_list;
 
-	snprintf(mgr.state_file_name, sizeof(mgr.state_file_name), "./disksurvey.dat");
+	if (timer_monotonic(1000, &fd_state) < 0) {
+		printf("Failed to setup tur timer\n");
+		return;
+	}
+
+	wire_wait_init(&m->wait_tur);
+
+	wire_wait_list_init(&wait_list);
+	wire_wait_chain(&wait_list, &fd_state.wait);
+	wire_wait_chain(&wait_list, &m->wait_tur);
+	while (m->active) {
+		wire_list_wait(&wait_list);
+
+		if (m->wait_tur.triggered) {
+			wire_wait_reset(&m->wait_tur);
+			continue;
+		}
+
+		int ret = timer_read(&fd_state);
+		if (ret < 0) {
+			printf("Error reading timer, shutting down tur timer\n");
+			break;
+		} else if (ret > 0) {
+			int disk_idx;
+			for_active_disks(disk_idx) {
+				disk_tur(&mgr.disk_list[disk_idx].disk);
+			}
+		}
+	}
+
+	timer_close(&fd_state);
+}
+
+static void task_five_min_timer(void *arg)
+{
+	struct disk_mgr *m = arg;
+	wire_fd_state_t fd_state;
+	wire_wait_list_t wait_list;
+
+	if (timer_monotonic(5*60*1000, &fd_state) < 0) {
+		printf("Failed to setup five min timer\n");
+		return;
+	}
+
+	wire_wait_init(&m->wait_five_min);
+
+	wire_wait_list_init(&wait_list);
+	wire_wait_chain(&wait_list, &fd_state.wait);
+	wire_wait_chain(&wait_list, &m->wait_five_min);
+
+	while (m->active) {
+		wire_list_wait(&wait_list);
+
+		if (m->wait_five_min.triggered) {
+			wire_wait_reset(&m->wait_five_min);
+			continue;
+		}
+
+		int ret = timer_read(&fd_state);
+		if (ret < 0) {
+			printf("Error reading timer, shutting down five min timer\n");
+			break;
+		} else if (ret == 0) {
+			continue;
+		}
+
+		int disk_idx;
+		for_active_disks(disk_idx) {
+			disk_tick(&mgr.disk_list[disk_idx].disk);
+		}
+
+		// Now let the disk wires do their tick work
+		wire_yield();
+
+		// Save state after they did their work
+		disk_manager_save_state();
+
+		if (!m->active)
+			break;
+
+		disk_manager_rescan();
+	}
+
+	timer_close(&fd_state);
 }
 
 static bool disk_manager_load_latency(latency_t *latency, unsigned char *buf, uint32_t *offset, uint32_t buf_size)
@@ -675,64 +811,61 @@ static void disk_manager_load(void)
 	close(fd);
 }
 
-void disk_manager_init(struct ev_loop *loop)
+void disk_manager_init(void)
 {
-	disk_manager_init_mgr();
+	// Initialize the disk list
+	mgr.first_unused_entry = 0;
+
+	// Initialize the heads
+	mgr.alive_head = -1;
+	mgr.dead_head = -1;
+
+	snprintf(mgr.state_file_name, sizeof(mgr.state_file_name), "./disksurvey.dat");
+	mgr.active = 1;
+
+	wire_pool_init(&mgr.wire_pool, NULL, MAX_DISKS, 4096);
+
 	disk_manager_load();
 	system_identifier_read(&mgr.system_id);
 
-	mgr.loop = loop;
-
-	// The first event will be 0 seconds into the event loop and then once every hour
-	ev_timer *timer = &mgr.periodic_rescan_timer;
-	ev_timer_init(timer, rescan_cb, 0, 60*60);
-	ev_timer_start(loop, &mgr.periodic_rescan_timer);
-
-	timer = &mgr.tur_timer;
-	ev_timer_init(timer, tur_timer, 0.0, 1.0);
-	ev_timer_start(loop, timer);
-
-	timer = &mgr.five_min_timer;
-	ev_timer_init(timer, five_min_tick_timer, 5.0*60.0, 5.0*60.0);
-	ev_timer_start(loop, timer);
-
-	ev_async *async = &mgr.cleanup_dead_disks;
-	ev_async_init(async, cleanup_dead_disks);
-	ev_async_start(loop, async);
-
-	ev_signal *evsig = &mgr.hup_signal;
-	ev_signal_init(evsig, handle_sighup, SIGHUP);
-	ev_signal_start(loop, evsig);
+	wire_init(&mgr.task_rescan, "disk rescan", task_rescan, &mgr, WIRE_STACK_ALLOC(64*1024));
+	wire_init(&mgr.task_tur, "tur timer", task_tur, &mgr, WIRE_STACK_ALLOC(4096));
+	wire_init(&mgr.task_five_min_timer, "five min timer", task_five_min_timer, &mgr, WIRE_STACK_ALLOC(4096));
+	wire_init(&mgr.task_dead_disk_reaper, "dead disk reaper", task_dead_disk_reaper, &mgr, WIRE_STACK_ALLOC(4096));
 }
 
-static void disk_manager_check_stop(struct ev_loop *loop, ev_timer *watcher, int revents)
+static void stop_task(void *arg)
 {
-	printf("Checking for stop\n");
+	struct disk_mgr *m = arg;
 
 	int disk_idx;
 	for_active_disks(disk_idx) {
-		disk_t *disk = &mgr.disk_list[disk_idx].disk;
+		disk_t *disk = &m->disk_list[disk_idx].disk;
 		printf("Trying to stop disk %d: %p\n", disk_idx, disk);
 		disk_stop(disk);
 	}
 
-	cleanup_dead_disks(loop, NULL, revents);
+	while (1) {
+		cleanup_dead_disks(m);
+		if (m->alive_head == -1)
+			break;
 
-	if (mgr.alive_head == -1) {
-		printf("No more live disks, stopping\n");
-		// No live disks anymore, can cleanly shutdown
-		ev_break(mgr.loop, EVBREAK_ALL);
-		disk_manager_save_state_nofork();
+		wire_fd_wait_msec(1000);
 	}
-	printf("checking done\n");
+
+	printf("No more live disks, stopping\n");
+	disk_manager_save_state_nofork();
 }
 
 void disk_manager_stop(void)
 {
-	ev_timer_stop(mgr.loop, &mgr.tur_timer);
-	ev_timer_stop(mgr.loop, &mgr.five_min_timer);
+	mgr.active = 0;
 
-	ev_timer *timer = &mgr.stop_timer;
-	ev_timer_init(timer, disk_manager_check_stop, 0, 1);
-	ev_timer_start(mgr.loop, timer);
+	// Wake up the tasks so they will exit as they notice that the managr is not active anymore
+	wire_resume(&mgr.task_rescan);
+	wire_wait_resume(&mgr.wait_tur);
+	wire_wait_resume(&mgr.wait_five_min);
+
+	// Now monitor the disks until they can all be stopped
+	wire_init(&mgr.task_stop, "stopper", stop_task, &mgr, WIRE_STACK_ALLOC(4096));
 }

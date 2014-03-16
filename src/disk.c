@@ -1,10 +1,12 @@
 #include "disk.h"
 #include "util.h"
+#include "monoclock.h"
 
 #include "scsicmd.h"
 #include "ata.h"
 #include "ata_parse.h"
 
+#include <inttypes.h>
 #include <scsi/sg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -14,9 +16,6 @@
 
 #define DEF_TIMEOUT 30*1000
 #define MONITOR_INTERVAL_SEC 3600
-
-static void disk_state_machine_step(disk_t *disk);
-static void disk_monitor(disk_t *disk);
 
 inline const char *json_tribool(tribool_e state)
 {
@@ -76,112 +75,113 @@ int disk_json(disk_t *disk, char *buf, int len)
 	return orig_len - len;
 }
 
-static inline bool sg_request_data(disk_t *disk, sg_callback cb, unsigned char *cdb, int cdb_len)
+static bool sg_request_with_dir(disk_t *disk, unsigned char *cdb, int cdb_len, int xfer_dir)
 {
-	bool alive = sg_request(&disk->sg, &disk->data_request, cb, cdb, cdb_len, SG_DXFER_FROM_DEV, disk->data_buf, sizeof(disk->data_buf), DEF_TIMEOUT);
-	if (!alive && disk->on_death) {
-		printf("Disk %p died\n", disk);
-		disk->on_death(disk);
+	void *buf;
+	unsigned buf_len;
+
+	if (xfer_dir == SG_DXFER_NONE) {
+		buf = NULL;
+		buf_len = 0;
+	} else {
+		buf = disk->data_buf;
+		buf_len = sizeof(disk->data_buf);
 	}
-	return alive;
+
+	if (sg_request_submit(&disk->sg, &disk->request, cdb, cdb_len, xfer_dir, buf, buf_len, DEF_TIMEOUT) < 0) {
+		printf("Failed to submit request for disk\n");
+		return false;
+	}
+
+	if (sg_request_wait_response(&disk->sg, &disk->request) < 0) {
+		printf("Failed to read request for disk\n");
+		return false;
+	}
+
+	/*
+	if (disk->request.hdr.status != 0) {
+		printf("Request failed, status=%d\n", disk->request.hdr.status);
+		return false;
+	}
+	*/
+
+	return true;
 }
 
-static void disk_tur_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
-				unsigned char msg_status, char sb_len_wr, short int host_status,
-				short int driver_status, int residual_len, int duration_msec, int info)
+static inline bool sg_request_nodata(disk_t *disk, unsigned char *cdb, int cdb_len)
 {
-	disk_t *disk = container_of(req, disk_t, tur_request);
+	return sg_request_with_dir(disk, cdb, cdb_len, SG_DXFER_NONE);
+}
+
+static inline bool sg_request_data(disk_t *disk, unsigned char *cdb, int cdb_len)
+{
+	return sg_request_with_dir(disk, cdb, cdb_len, SG_DXFER_FROM_DEV);
+}
+
+static bool disk_do_tur(disk_t *disk)
+{
+	unsigned char cdb[32];
+	unsigned cdb_len;
+
+	if (disk->disk_info.disk_type == DISK_TYPE_ATA)
+		cdb_len = cdb_ata_check_power_mode(cdb);
+	else
+		cdb_len = cdb_tur(cdb);
+
+	bool alive = sg_request_nodata(disk, cdb, cdb_len);
+	printf("request sent, alive: %s\n", alive ? "yes" : "no");
+	if (!alive) {
+		printf("Disk %p died\n", disk);
+		return false;
+	} else {
+		disk->last_ping_ts = disk->request.start;
+	}
+
+	sg_request_t *req = &disk->request;
 	double latency = req->end - req->start;
 
-	printf("Got reply in %f msecs (%d in sg)\n", 1000.0*latency, duration_msec);
+	printf("Got reply in %f msecs (%d in sg)\n", 1000.0*latency, req->hdr.duration);
 	disk->last_reply_ts = req->end;
 
 	latency_add_sample(&disk->latency, latency*1000.0);
+	return true;
 }
 
-void disk_tur(disk_t *disk)
+static bool disk_ata_smart_result(disk_t *disk)
 {
-	if (!disk->tur_request.in_progress) {
-		unsigned char cdb[32];
-		unsigned cdb_len;
+	sg_request_t *req = &disk->request;
+	unsigned char cdb[32];
+	int cdb_len = cdb_ata_smart_return_status(cdb);
+	bool alive = sg_request_data(disk, cdb, cdb_len);
+	printf("ATA SMART RETURN RESULT request sent, alive: %s\n", alive? "yes" : "no");
+	printf("Got ATA SMART RETURN RESULT reply in %f msecs (%d in sg)\n", 1000.0*(req->end-req->start), req->hdr.duration);
+	if (!alive)
+		return false;
 
-		if (disk->disk_info.disk_type == DISK_TYPE_ATA)
-			cdb_len = cdb_ata_check_power_mode(cdb);
-		else
-			cdb_len = cdb_tur(cdb);
-			
-		bool alive = sg_request(&disk->sg, &disk->tur_request, disk_tur_reply, cdb, cdb_len, SG_DXFER_NONE, NULL, 0, DEF_TIMEOUT);
-		printf("request sent, alive: %s\n", alive ? "yes" : "no");
-		if (!alive && disk->on_death) {
-			printf("Disk %p died\n", disk);
-			disk->on_death(disk);
-		} else {
-			disk->last_ping_ts = disk->tur_request.start;
-		}
-	} else {
-		printf("TUR request on the air still!\n");
-	}
-}
-
-
-static void disk_ata_smart_result_reply(sg_request_t *req, unsigned char status, unsigned char masked_status,
-				unsigned char msg_status, char sb_len_wr, short int host_status,
-				short int driver_status, int residual_len, int duration_msec, int info)
-{
-	disk_t *disk = container_of(req, disk_t, data_request);
-	printf("Got ATA SMART RETURN RESULT reply in %f msecs (%d in sg)\n", 1000.0*(req->end-req->start), duration_msec);
-
-	if (status == 0) {
+	if (req->hdr.status == 0) {
 		printf("ATA SMART RETURN RESULT succeeded but we expected it to always fail!\n");
-		disk_state_machine_step(disk);
-		return;
+		return true;
 	}
 
 	bool smart_ok;
-	bool parsed = ata_smart_return_status_result(req->sense, sb_len_wr, &smart_ok);
-		printf("parsing of smart return: %d\n", parsed);
+	bool parsed = ata_smart_return_status_result(req->sense, req->hdr.sb_len_wr, &smart_ok);
+	printf("parsing of smart return: %d\n", parsed);
 	if (parsed) {
 		disk->disk_info.ata.smart_ok = smart_ok;
 	}
-
-	disk_state_machine_step(disk);
+	return true;
 }
 
-static void disk_ata_smart_result(disk_t *disk)
+static bool disk_monitor(disk_t *disk)
 {
-	if (disk->data_request.in_progress) {
-		disk->pending_sata_smart_result = 1;
-		return;
-	}
+	uint64_t now = monoclock_get_seconds();
 
-	disk->pending_sata_smart_result = 0;
-
-	unsigned char cdb[32];
-	int cdb_len = cdb_ata_smart_return_status(cdb);
-	bool alive = sg_request_data(disk, disk_ata_smart_result_reply, cdb, cdb_len);
-	printf("ATA SMART RETURN RESULT request sent, alive: %s\n", alive? "yes" : "no");
-	
-}
-
-static void disk_state_machine_step(disk_t *disk)
-{
-	if (disk->data_request.in_progress)
-		return;
-
-	if (disk->pending_sata_smart_result)
-		disk_ata_smart_result(disk);
-}
-
-static void disk_monitor(disk_t *disk)
-{
-	ev_tstamp now = ev_now(EV_DEFAULT);
-
-	printf("checking for monitoring last_monitor=%f now=%f\n", disk->last_monitor_ts, now);
+	printf("checking for monitoring last_monitor=%"PRIu64" now=%"PRIu64"\n", disk->last_monitor_ts, now);
 	if (disk->last_monitor_ts + MONITOR_INTERVAL_SEC < now) {
 		printf("Monitor initiated\n");
 		disk->last_monitor_ts = now;
 		if (disk->disk_info.disk_type == DISK_TYPE_ATA) {
-			disk_ata_smart_result(disk);
+			return disk_ata_smart_result(disk);
 			//TODO: disk_ata_smart_attributes(disk);
 		} else {
 			//TODO: disk_informational_exception(disk);
@@ -189,38 +189,84 @@ static void disk_monitor(disk_t *disk)
 	} else {
 		printf("Monitor skipped\n");
 	}
+	return true;
+}
+
+static bool disk_do_tick(disk_t *disk)
+{
+	latency_tick(&disk->latency);
+	return disk_monitor(disk);
 }
 
 void disk_tick(disk_t *disk)
 {
-	latency_tick(&disk->latency);
-	disk_monitor(disk);
+	disk->request_tick = 1;
+	if (disk->active)
+		wire_wait_resume(&disk->wait);
 }
 
-void disk_cleanup(disk_t *disk)
+void disk_tur(disk_t *disk)
 {
-	sg_close(&disk->sg, EV_DEFAULT);
-	memset(disk->sg_path, 0, sizeof(disk->sg_path));
+	disk->request_tur = 1;
+	if (disk->active)
+		wire_wait_resume(&disk->wait);
 }
 
 void disk_stop(disk_t *disk)
 {
-	if (disk->tur_request.in_progress)
-		return;
-	if (disk->data_request.in_progress)
-		return;
+	if (disk->active)
+		wire_wait_resume(&disk->wait);
+	disk->active = 0;
+}
 
+static void disk_wire(void *arg)
+{
+	wire_wait_list_t wait_list;
+	disk_t *disk = arg;
+
+	if (!sg_init(&disk->sg, disk->sg_path)) {
+		printf("Failed to access disk %s: %m\n", disk->sg_path);
+		goto Exit;
+	}
+
+	wire_wait_list_init(&wait_list);
+	wire_wait_init(&disk->wait);
+	wire_wait_chain(&wait_list, &disk->wait);
+
+	disk->active = 1;
+
+	while (disk->active) {
+		if (!disk->wait.triggered)
+			wire_list_wait(&wait_list);
+		wire_wait_reset(&disk->wait);
+
+		if (disk->request_tur) {
+			disk->request_tur = 0;
+			disk->active = disk_do_tur(disk);
+		}
+
+		if (disk->request_tick) {
+			disk->request_tick = 0;
+			disk->active = disk_do_tick(disk);
+		}
+	}
+
+	sg_close(&disk->sg);
+
+Exit:
+	memset(disk->sg_path, 0, sizeof(disk->sg_path));
 	disk->on_death(disk);
 }
 
-void disk_init(disk_t *disk, disk_info_t *disk_info, const char *dev)
+bool disk_init(disk_t *disk, disk_info_t *disk_info, const char *dev, wire_pool_t *pool)
 {
 	memset(disk, 0, sizeof(*disk));
 	strcpy(disk->sg_path, dev);
 	memcpy(&disk->disk_info, disk_info, sizeof(disk_info_t));
 
-	if (!sg_init(&disk->sg, EV_DEFAULT, disk->sg_path)) {
-		printf("Failed to access disk %s: %m\n", disk->sg_path);
-		return;
-	}
+	char name[32];
+	snprintf(name, sizeof(name), "disk %s", disk->sg_path);
+	wire_pool_alloc(pool, name, disk_wire, disk);
+
+	return true;
 }

@@ -1,5 +1,7 @@
 #include "sg.h"
-#include <scsi/sg.h>
+#include "monoclock.h"
+#include "wire_fd.h"
+
 #include <memory.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -9,82 +11,104 @@
 #include <stdio.h>
 #include <errno.h>
 
-static void sg_cb(struct ev_loop *loop, ev_io *io, int revents);
-
-bool sg_init(sg_t *sg, struct ev_loop *loop, const char *sg_path)
+static int submit_request(sg_t *sg, sg_request_t *request)
 {
-	memset(sg, 0, sizeof(*sg));
+	request->hdr.usr_ptr = request;
+	request->start = monoclock_get();
+	ssize_t ret = write(sg->sg_fd, &request->hdr, sizeof(request->hdr));
+	if (ret == sizeof(request->hdr)) {
+		return 0;
+	}
 
-	int sg_fd = open(sg_path, O_RDWR|O_CLOEXEC);
-	if (sg_fd < 0)
+	if (errno == EWOULDBLOCK || errno == EAGAIN) {
+		printf("Failed to submit io, would block.\n");
+	} else {
+		printf("Failed to submit io: %m\n");
+	}
+	return -1;
+}
+
+static void set_nonblock(int fd)
+{
+        int ret = fcntl(fd, F_GETFL);
+        if (ret < 0)
+                return;
+
+        fcntl(fd, F_SETFL, ret | O_NONBLOCK);
+}
+
+bool sg_init(sg_t *sg, const char *sg_path)
+{
+	sg->sg_fd = open(sg_path, O_RDWR|O_CLOEXEC);
+	if (sg->sg_fd < 0)
 		return false;
 
-	ev_io *io = &sg->io;
-	ev_io_init(io, sg_cb, sg_fd, EV_READ);
-	ev_io_start(loop, io);
+	set_nonblock(sg->sg_fd);
 
 	return true;
 }
 
-void sg_close(sg_t *sg, struct ev_loop *loop)
+void sg_close(sg_t *sg)
 {
-	ev_io_stop(loop, &sg->io);
-	close(sg->io.fd);
+	close(sg->sg_fd);
+	sg->sg_fd = -1;
 }
 
-bool sg_request(sg_t *sg, sg_request_t *req, sg_callback cb, unsigned char *cdb,
+int sg_request_submit(sg_t *sg, sg_request_t *req, unsigned char *cdb,
 				   char cdb_len, int dxfer_dir, void *buf, unsigned int buf_len,
 				   unsigned int timeout)
 {
-	assert(cb);
+	memset(&req->hdr, 0, sizeof(req->hdr));
+	req->hdr.interface_id = 'S';
+	req->hdr.dxfer_direction = dxfer_dir;
+	req->hdr.cmd_len = cdb_len;
+	req->hdr.mx_sb_len = sizeof(req->sense);
+	req->hdr.dxfer_len = buf_len;
+	req->hdr.dxferp = buf;
+	req->hdr.cmdp = cdb;
+	req->hdr.sbp = req->sense;
+	req->hdr.timeout = timeout;
+	req->hdr.flags = SG_FLAG_LUN_INHIBIT;
+	req->hdr.pack_id = 0;
+	req->hdr.usr_ptr = req;
 
-	sg_io_hdr_t hdr;
-	memset(&hdr, 0, sizeof(hdr));
-	hdr.interface_id = 'S';
-	hdr.dxfer_direction = dxfer_dir;
-	hdr.cmd_len = cdb_len;
-	hdr.mx_sb_len = sizeof(req->sense);
-	hdr.dxfer_len = buf_len;
-	hdr.dxferp = buf;
-	hdr.cmdp = cdb;
-	hdr.sbp = req->sense;
-	hdr.timeout = timeout;
-	hdr.flags = SG_FLAG_LUN_INHIBIT;
-	hdr.pack_id = 0;
-	hdr.usr_ptr = req;
-
-	req->cb = cb;
-	ssize_t ret = write(sg->io.fd, &hdr, sizeof(hdr));
-	if (ret == sizeof(hdr)) {
-		req->in_progress = true;
-		req->start = ev_now(EV_DEFAULT);
-		return true;
-	} else {
-		if (errno == EWOULDBLOCK || errno == EAGAIN) {
-			printf("Failed to submit io, would block.\n");
-			return true;
-		} else {
-			printf("Failed to submit io: %m\n");
-		}
-		return false;
-	}
+	return submit_request(sg, req);
 }
 
-static void sg_cb(struct ev_loop *loop, ev_io *io, int revents)
+int sg_request_wait_response(sg_t *sg, sg_request_t *req)
 {
-	sg_request_t *req;
-	sg_io_hdr_t hdr;
+	int result = -1;
+	wire_fd_state_t fd_state;
 
-	if (revents != EV_READ) {
-		printf("WARN: sg event %d\n", revents);
+	wire_fd_mode_init(&fd_state, sg->sg_fd);
+	wire_fd_mode_read(&fd_state);
+
+	while (1) {
+		wire_fd_wait(&fd_state);
+
+		sg_io_hdr_t hdr;
+		int ret = read(sg->sg_fd, &hdr, sizeof(hdr));
+		if (ret == sizeof(hdr)) {
+			if (req != hdr.usr_ptr) {
+				printf("Unknown response received, waiting for the real one!\n");
+				continue;
+			}
+			req->end = monoclock_get();
+			req->hdr = hdr;
+			result = 0;
+			break;
+		} else if (ret < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				continue;
+			else {
+				printf("Error while reading the data, bailing out: %m\n");
+				break;
+			}
+		} else {
+			printf("Didn't read the full data only read %d bytes, weird!\n", ret);
+		}
 	}
 
-	if (read(io->fd, &hdr, sizeof(hdr)) == sizeof(hdr)) {
-			req = (sg_request_t *)hdr.usr_ptr;
-			req->end = ev_now(loop);
-			req->in_progress = false;
-			req->cb(req, hdr.status, hdr.masked_status,
-					hdr.msg_status, hdr.sb_len_wr, hdr.host_status,
-					hdr.driver_status, hdr.resid, hdr.duration, hdr.info);
-	}
+	wire_fd_mode_none(&fd_state);
+	return result;
 }
