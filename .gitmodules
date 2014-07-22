@@ -1,0 +1,3 @@
+[submodule "libwire"]
+	path = libwire
+	url = https://github.com/baruch/libwire.git

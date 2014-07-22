@@ -1,0 +1,20 @@
+build built/src/wire.o: c libwire/src/wire.c
+build built/src/wire_fd.o: c libwire/src/wire_fd.c
+build built/src/wire_timeout.o: c libwire/src/wire_timeout.c
+build built/src/wire_net.o: c libwire/src/wire_net.c
+build built/src/wire_pool.o: c libwire/src/wire_pool.c
+build built/src/wire_stack.o: c libwire/src/wire_stack.c
+build built/src/wire_io.o: c libwire/src/wire_io.c
+build built/src/wire_log.o: c libwire/src/wire_log.c
+build built/src/http_parser.o: c libwire/src/http_parser.c
+build built/src/wire_channel.o: c libwire/src/wire_channel.c
+build built/src/wire_wait.o: c libwire/src/wire_wait.c
+build built/src/wire_lock.o: c libwire/src/wire_lock.c
+build built/src/wire_semaphore.o: c libwire/src/wire_semaphore.c
+build built/src/coro.o: c libwire/src/coro.c
+build libwire.a: ar built/src/wire.o built/src/wire_fd.o $
+    built/src/wire_timeout.o built/src/wire_net.o built/src/wire_pool.o $
+    built/src/wire_stack.o built/src/wire_io.o built/src/wire_log.o $
+    built/src/http_parser.o built/src/wire_channel.o built/src/wire_wait.o $
+    built/src/wire_lock.o built/src/wire_semaphore.o built/src/coro.o
+

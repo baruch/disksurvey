@@ -8,8 +8,8 @@ test_srcs = {
         'disk_mgr': ('disk_mgr', '../src/protocol.pb-c'),
 }
 
-cflags = ['-I.', '-I../libscsicmd/include', '-I../../libwire/include', '-g', '-O0', '-Wall', '-Werror']
-ldflags = ['-lev', '-L../libscsicmd', '-lscsicmd', '-lprotobuf-c', '-L../../libwire', '-lwire']
+cflags = ['-I.', '-I../libscsicmd/include', '-Ilibwire/include', '-g', '-O0', '-Wall', '-Werror', '-D_GNU_SOURCE']
+ldflags = [ '-L../libscsicmd', '-lscsicmd', '-lprotobuf-c', '-static']
 
 import os, os.path
 import ninja_syntax
@@ -67,10 +67,6 @@ def cc(filename, src, **kwargs):
 
 all_targets = []
 
-n.rule('make',
-       command='make -C $dir $file > /dev/null',
-       description='MAKE $out')
-
 def all_files(d):
     out = []
     for root, dirs, files in os.walk(d):
@@ -79,7 +75,7 @@ def all_files(d):
 
 n.build('src/web_app.c', 'concat', ['web/app.inc', 'src/web.c'])
 
-lib = []
+lib = ['libwire.a']
 
 objs = []
 for source in srcs:
@@ -127,6 +123,15 @@ n.rule('configure',
         generator=True
         )
 all_targets += n.build('build.ninja', 'configure', implicit='./configure')
+n.newline()
+
+#n.rule('libwire_configure',
+#        command='cd libwire && ./configure',
+#        description='CONFIGURE libwire build.ninja',
+#        generator=True
+#        )
+#n.build('libwire/build.ninja', 'libwire_configure', implicit='libwire/configure')
+n.subninja('build.ninja.libwire')
 n.newline()
 
 n.rule('tags',
