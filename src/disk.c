@@ -130,9 +130,8 @@ static bool disk_do_tur(disk_t *disk)
 		cdb_len = cdb_tur(cdb);
 
 	bool alive = sg_request_nodata(disk, cdb, cdb_len);
-	wire_log(WLOG_INFO, "request sent, alive: %s", alive ? "yes" : "no");
 	if (!alive) {
-		wire_log(WLOG_INFO, "Disk %p died", disk);
+		wire_log(WLOG_NOTICE, "Disk %p died", disk);
 		return false;
 	} else {
 		disk->last_ping_ts = disk->request.start;
@@ -141,7 +140,6 @@ static bool disk_do_tur(disk_t *disk)
 	sg_request_t *req = &disk->request;
 	double latency = req->end - req->start;
 
-	wire_log(WLOG_INFO, "Got reply in %f msecs (%d in sg)", 1000.0*latency, req->hdr.duration);
 	disk->last_reply_ts = req->end;
 
 	latency_add_sample(&disk->latency, latency*1000.0);
