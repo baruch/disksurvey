@@ -10,6 +10,7 @@
 #include "wire_fd.h"
 #include "wire_pool.h"
 #include "wire_stack.h"
+#include "wire_log.h"
 #include "macros.h"
 #include "http_parser.h"
 
@@ -106,7 +107,7 @@ static int api_disk_list(http_parser *parser)
 	if (written >= 0) {
 		return response_write(parser, 200, "OK", "application/json", buf, written-1);
 	} else {
-		printf("ERROR: space insufficient\n");
+		wire_log(WLOG_CRITICAL, "ERROR: space insufficient");
 		static const char *msg = "Insufficient buffer space";
 		response_write(parser, 500, msg, "text/plain", msg, strlen(msg));
 		return -1;
@@ -148,7 +149,7 @@ static int socket_setup(unsigned short port)
 {
 	int fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 1) {
-		perror("Failed to create socket");
+		wire_log(WLOG_FATAL, "Failed to create socket: %m");
 		return -1;
 	}
 
@@ -162,14 +163,14 @@ static int socket_setup(unsigned short port)
 
 	int ret = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
 	if (ret < 0) {
-		perror("Failed to bind to socket");
+		wire_log(WLOG_FATAL, "Failed to bind to socket: %m");
 		close(fd);
 		return -1;
 	}
 
 	ret = listen(fd, 100);
 	if (ret < 0) {
-		perror("failed to listen to port");
+		wire_log(WLOG_FATAL, "failed to listen to port: %m");
 		close(fd);
 		return -1;
 	}
@@ -179,8 +180,6 @@ static int socket_setup(unsigned short port)
 
 static int on_message_begin(http_parser *parser)
 {
-	printf("Message begin\n");
-
 	struct web_data *d = parser->data;
 
 	d->path[0] = 0;
@@ -193,23 +192,18 @@ static int on_headers_complete(http_parser *parser)
 {
 	struct web_data *d = parser->data;
 	d->method = parser->method;
-	printf("Headers complete: HTTP/%d.%d %s\n", parser->http_major, parser->http_minor, http_method_str(parser->method));
 	return 0;
 }
 
 static int on_message_complete(http_parser *parser)
 {
-	printf("message complete\n");
 	struct web_data *d = parser->data;
 
 	int i;
 
-	printf("Method: %d\nPath: %s\nQuery: %s\n", d->method, d->path, d->query_string);
-
 	for (i = 0; i < ARRAY_SIZE(urls); i++) {
 		if (strcasecmp(urls[i].path, d->path) == 0) {
 			urls[i].cb(parser);
-			printf("Request succeeded\n");
 			return 0;
 		}
 	}
@@ -220,13 +214,10 @@ static int on_message_complete(http_parser *parser)
 
 static int on_url(http_parser *parser, const char *at, size_t length)
 {
-	printf("URL: %.*s\n", (int)length, at);
-
 	struct web_data *d = parser->data;
 	struct http_parser_url url;
 	int ret = http_parser_parse_url(at, length, 0, &url);
 	if (ret != 0) {
-		printf("URL parsing failed\n");
 		return -1;
 	}
 
@@ -234,7 +225,6 @@ static int on_url(http_parser *parser, const char *at, size_t length)
 		memcpy(d->path, at + url.field_data[UF_PATH].off, url.field_data[UF_PATH].len);
 		d->path[url.field_data[UF_PATH].len] = 0;
 	} else {
-		printf("Missing path in the url, baffled and dazed!\n");
 		return -1;
 	}
 
@@ -246,44 +236,12 @@ static int on_url(http_parser *parser, const char *at, size_t length)
 	return 0;
 }
 
-static int on_status(http_parser *parser, const char *at, size_t length)
-{
-	UNUSED(parser);
-	printf("STATUS: %.*s\n", (int)length, at);
-	return 0;
-}
-
-static int on_header_field(http_parser *parser, const char *at, size_t length)
-{
-	UNUSED(parser);
-	printf("HEADER FIELD: %.*s\n", (int)length, at);
-	return 0;
-}
-
-static int on_header_value(http_parser *parser, const char *at, size_t length)
-{
-	UNUSED(parser);
-	printf("HEADER VALUE: %.*s\n", (int)length, at);
-	return 0;
-}
-
-static int on_body(http_parser *parser, const char *at, size_t length)
-{
-	UNUSED(parser);
-	printf("BODY: %.*s\n", (int)length, at);
-	return 0;
-}
-
 static const struct http_parser_settings parser_settings = {
 	.on_message_begin = on_message_begin,
 	.on_headers_complete = on_headers_complete,
 	.on_message_complete = on_message_complete,
 
 	.on_url = on_url,
-	.on_status = on_status,
-	.on_header_field = on_header_field,
-	.on_header_value = on_header_value,
-	.on_body = on_body,
 };
 
 static void web_run(void *arg)
@@ -305,38 +263,29 @@ static void web_run(void *arg)
 	do {
 		buf[0] = 0;
 		int received = read(d.fd, buf, sizeof(buf));
-		printf("Received: %d %d\n", received, errno);
 		if (received == 0) {
 			/* Fall-through, tell parser about EOF */
-			printf("Received EOF\n");
 		} else if (received < 0) {
-			printf("Error\n");
 			if (errno == EINTR || errno == EAGAIN) {
-				printf("Waiting\n");
 				/* Nothing received yet, wait for it */
 				// TODO: employ a timeout here to exit if no input is received
 				wire_fd_wait(&d.fd_state);
-				printf("Done waiting\n");
 				continue;
 			} else {
-				printf("breaking out\n");
 				break;
 			}
 		}
 
-		printf("Processing %d\n", (int)received);
 		size_t processed = http_parser_execute(&parser, &parser_settings, buf, received);
 		if (parser.upgrade) {
 			/* Upgrade not supported yet */
-			printf("Upgrade not supported, bailing out\n");
 			break;
 		} else if (received == 0) {
 			// At EOF, exit now
-			printf("Received EOF\n");
 			break;
 		} else if (processed != (size_t)received) {
 			// Error in parsing
-			printf("Not everything was parsed, error is likely, bailing out.\n");
+			wire_log(WLOG_DEBUG, "Not everything was parsed, error is likely, bailing out. (processed %d received %d)", processed, received);
 			break;
 		}
 	} while (1);
@@ -364,7 +313,7 @@ static void web_accept(void *arg)
 		wire_wait_chain(&wait_list, &web.close_wait);
 		wire_fd_wait_list_chain(&wait_list, &fd_state);
 
-		printf("listening on port %d\n", port);
+		wire_log(WLOG_INFO, "listening on port %d", port);
 
         while (1) {
 			    wire_fd_mode_read(&fd_state);
@@ -377,18 +326,17 @@ static void web_accept(void *arg)
 
                 int new_fd = accept(fd, NULL, NULL);
                 if (new_fd >= 0) {
-                        printf("New connection: %u %d\n", web_id, new_fd);
                         char name[32];
                         snprintf(name, sizeof(name), "web %u %d", web_id++, new_fd);
                         wire_t *task = wire_pool_alloc(&web.web_pool, name, web_run, (void*)(long int)new_fd);
                         if (!task) {
-                                printf("Web server is busy, sorry\n");
+                                wire_log(WLOG_NOTICE, "Web server is busy, sorry");
 								// TODO: Send something into the connection
                                 close(new_fd);
                         }
                 } else {
                         if (errno != EINTR && errno != EAGAIN) {
-                                perror("Error accepting from listening socket");
+                                wire_log(WLOG_WARNING, "Error accepting from listening socket: %m");
                                 break;
                         }
                 }
@@ -396,7 +344,7 @@ static void web_accept(void *arg)
 
 		wire_fd_mode_none(&fd_state);
 		close(fd);
-		printf("Web interface shutdown\n");
+		wire_log(WLOG_INFO, "Web interface shutdown");
 }
 
 void web_init(int port)
@@ -409,6 +357,6 @@ void web_init(int port)
 
 void web_stop(void)
 {
-	printf("Shutting down the web interface\n");
+	wire_log(WLOG_INFO, "Shutting down the web interface");
 	wire_wait_resume(&web.close_wait);
 }

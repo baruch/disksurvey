@@ -9,7 +9,7 @@ test_srcs = {
 }
 
 cflags = ['-I.', '-I../libscsicmd/include', '-Ilibwire/include', '-g', '-O0', '-Wall', '-Werror', '-D_GNU_SOURCE']
-ldflags = [ '-L../libscsicmd', '-lscsicmd', '-lprotobuf-c', '-static']
+ldflags = [ '-L../libscsicmd', '-lscsicmd', '-lprotobuf-c', '-lpthread' ]
 
 import os, os.path
 import ninja_syntax
