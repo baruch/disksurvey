@@ -4,6 +4,8 @@
 #include "wire.h"
 #include "wire_fd.h"
 #include "wire_stack.h"
+#include "wire_io.h"
+#include "wire_log.h"
 
 #include <sys/signalfd.h>
 #include <errno.h>
@@ -18,7 +20,7 @@ static wire_t signal_task;
 
 static void handle_shutdown_signal(void)
 {
-	printf("Terminating the process\n");
+	wire_log(WLOG_NOTICE, "Terminating the process");
 	web_stop();
 	disk_manager_stop();
 	/* Now we return to the loop to let everything unwind in an orderly fashion, all IOs need to return */
@@ -67,14 +69,14 @@ static void signal_task_run(void *arg)
 		}
 
 		if (fdsi.ssi_signo == SIGINT || fdsi.ssi_signo == SIGTERM || fdsi.ssi_signo == SIGQUIT) {
-			printf("Got signal %d\n", fdsi.ssi_signo);
+			wire_log(WLOG_NOTICE, "Got signal %d", fdsi.ssi_signo);
 			handle_shutdown_signal();
 			break;
 		} else if (fdsi.ssi_signo == SIGHUP) {
-			printf("Got sighup, saving state\n");
+			wire_log(WLOG_INFO, "Got sighup, saving state");
 			disk_manager_save_state();
 		} else {
-			printf("Read unexpected signal\n");
+			wire_log(WLOG_WARNING, "Read unexpected signal %d", fdsi.ssi_signo);
 		}
 	}
 
@@ -82,7 +84,7 @@ static void signal_task_run(void *arg)
 
 	wire_fd_mode_none(&fd_state);
 	close(fd);
-	printf("signal thread exiting\n");
+	wire_log(WLOG_INFO, "signal thread exiting");
 }
 
 static void register_shutdown_handler(void)
@@ -96,6 +98,8 @@ int main()
 
 	wire_thread_init(&wire_thread_main);
 	wire_fd_init();
+	wire_io_init(8);
+	wire_log_init_stdout();
 
 	register_shutdown_handler();
 	disk_manager_init();
