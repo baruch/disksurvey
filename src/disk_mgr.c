@@ -9,6 +9,7 @@
 #include "wire_fd.h"
 #include "wire_stack.h"
 #include "wire_wait.h"
+#include "wire_log.h"
 
 #include <sys/timerfd.h>
 #include <errno.h>
@@ -149,7 +150,7 @@ int disk_manager_disk_list_json(char *buf, int len)
 
 static void cleanup_dead_disks(struct disk_mgr *m)
 {
-	printf("Cleanup dead disks started\n");
+	wire_log(WLOG_INFO, "Cleanup dead disks started");
 	bool found = false;
 	int disk_idx;
 
@@ -171,7 +172,7 @@ static void cleanup_dead_disks(struct disk_mgr *m)
 			disk_list_append(disk_idx, &m->dead_head);
 		}
 	} while (found);
-	printf("Cleanup dead disks finished\n");
+	wire_log(WLOG_INFO, "Cleanup dead disks finished");
 }
 
 static void task_dead_disk_reaper(void *arg)
@@ -188,7 +189,7 @@ static void on_death(disk_t *disk)
 {
 	struct disk_state *state = container_of(disk, struct disk_state, disk);
 	state->died = true;
-	printf("Marking disk %p as dead for cleanup\n", disk);
+	wire_log(WLOG_INFO, "Marking disk %p as dead for cleanup", disk);
 	wire_resume(&mgr.task_dead_disk_reaper);
 }
 
@@ -210,7 +211,7 @@ static void disk_mgr_scan_done(disk_scanner_t *disk_scanner)
 	disk_info_t *new_disk_info = &disk_scanner->disk_info;
 
 	if (new_disk_info->device_type != SCSI_DEV_TYPE_BLOCK) {
-		printf("Unsupported device type %d\n", new_disk_info->device_type);
+		wire_log(WLOG_INFO, "Unsupported device type %d", new_disk_info->device_type);
 		return;
 	}
 
@@ -224,7 +225,7 @@ static void disk_mgr_scan_done(disk_scanner_t *disk_scanner)
 		    strcmp(new_disk_info->model, old_disk_info->model) == 0 &&
 			strcmp(new_disk_info->serial, old_disk_info->serial) == 0)
 		{
-            printf("Attaching to a previously seen disk\n");
+            wire_log(WLOG_INFO, "Attaching to a previously seen disk");
 			disk_init(disk, new_disk_info, disk_scanner->sg_path, &mgr.wire_pool);
 			disk->on_death = on_death;
 			disk_list_remove(disk_idx, &mgr.dead_head);
@@ -236,13 +237,13 @@ static void disk_mgr_scan_done(disk_scanner_t *disk_scanner)
 	// This is a completely new disk, allocate a new one for it
 	int new_disk_idx = disk_list_get_unused();
 	if (new_disk_idx != -1) {
-		printf("Adding a new disk at idx=%d!\n", new_disk_idx);
+		wire_log(WLOG_INFO, "Adding a new disk at idx=%d!", new_disk_idx);
 		disk_t *disk = &mgr.disk_list[new_disk_idx].disk;
 		disk_init(disk, new_disk_info, disk_scanner->sg_path, &mgr.wire_pool);
 		disk->on_death = on_death;
 		disk_list_append(new_disk_idx, &mgr.alive_head);
 	} else {
-		printf("Want to add but no space!\n");
+		wire_log(WLOG_INFO, "Want to add but no space!");
 	}
 }
 
@@ -286,14 +287,14 @@ static bool disk_manager_save_disk_info(disk_info_t *disk_info, int fd)
     uint32_t buf_size_n = htonl(buf_size);
 	ssize_t ret = write(fd, &buf_size_n, sizeof(buf_size_n));
 	if (ret != sizeof(buf_size_n)) {
-		printf("Error writing to data file buf_size: %m\n");
+		wire_log(WLOG_INFO, "Error writing to data file buf_size: %m");
 		return false;
 	}
 
     // Write the data
 	ret = write(fd, buf, buf_size);
 	if (ret != buf_size) {
-		printf("Error writing to data file (disk_info): %m\n");
+		wire_log(WLOG_INFO, "Error writing to data file (disk_info): %m");
 		return false;
 	}
 
@@ -337,14 +338,14 @@ static bool disk_manager_save_disk_latency(latency_t *latency, int fd)
     uint32_t buf_size_n = htonl(buf_size);
 	ssize_t ret = write(fd, &buf_size_n, sizeof(buf_size_n));
 	if (ret != sizeof(buf_size_n)) {
-		printf("Error writing to data file buf_size: %m\n");
+		wire_log(WLOG_INFO, "Error writing to data file buf_size: %m");
 		return false;
 	}
 
     // Write the data
 	ret = write(fd, buf, buf_size);
 	if (ret != buf_size) {
-		printf("Error writing to data file (latency): %m\n");
+		wire_log(WLOG_INFO, "Error writing to data file (latency): %m");
 		return false;
 	}
 
@@ -366,7 +367,7 @@ static void disk_manager_save_state_nofork(void)
 	bool error = true;
 	char tmp_file_name[256];
 
-	printf("Saving state\n");
+	wire_log(WLOG_INFO, "Saving state");
 
 	snprintf(tmp_file_name, sizeof(tmp_file_name), "%s.XXXXXX", mgr.state_file_name);
 	int fd = mkstemp(tmp_file_name);
@@ -374,24 +375,24 @@ static void disk_manager_save_state_nofork(void)
 	uint32_t version = htonl(2);
 	ssize_t ret = write(fd, &version, sizeof(version));
 	if (ret != sizeof(version)) {
-		printf("Error writing to data file: %m\n");
+		wire_log(WLOG_INFO, "Error writing to data file: %m");
 		goto Exit;
 	}
 
 	for_active_disks(disk_idx) {
 		disk_t *disk = &mgr.disk_list[disk_idx].disk;
-		printf("Saving live disk %d: %p\n", disk_idx, disk);
+		wire_log(WLOG_INFO, "Saving live disk %d: %p", disk_idx, disk);
 		if (!disk_manager_save_disk_state(disk, fd)) {
-            printf("Error saving disk data\n");
+            wire_log(WLOG_INFO, "Error saving disk data");
 			goto Exit;
         }
 	}
 
 	for_dead_disks(disk_idx) {
 		disk_t *disk = &mgr.disk_list[disk_idx].disk;
-		printf("Saving dead disk %d: %p\n", disk_idx, disk);
+		wire_log(WLOG_INFO, "Saving dead disk %d: %p", disk_idx, disk);
 		if (!disk_manager_save_disk_state(disk, fd)) {
-            printf("Error saving disk data\n");
+            wire_log(WLOG_INFO, "Error saving disk data");
 			goto Exit;
         }
 	}
@@ -405,7 +406,7 @@ Exit:
 	} else {
 		rename(tmp_file_name, mgr.state_file_name);
 	}
-	printf("Save state done, %s\n", error ? "with errors" : "successfully");
+	wire_log(WLOG_INFO, "Save state done, %s", error ? "with errors" : "successfully");
 }
 
 /** To avoid any needless delays while writing the state to the disk and to
@@ -416,7 +417,7 @@ Exit:
  */
 void disk_manager_save_state(void)
 {
-	printf("Forking to save state\n");
+	wire_log(WLOG_INFO, "Forking to save state");
 	pid_t pid = fork();
 	if (pid == 0) {
 		/* Child, saves information */
@@ -424,7 +425,7 @@ void disk_manager_save_state(void)
 		exit(0);
 	} else if (pid == -1) {
 		/* Parent, error */
-		printf("Error forking to save state: %m\n");
+		wire_log(WLOG_INFO, "Error forking to save state: %m");
 	} else {
 		/* Parent, ok */
 	}
@@ -435,31 +436,30 @@ void disk_manager_rescan_internal(struct disk_mgr *m)
 	int ret;
 	glob_t globbuf = { 0, NULL, 0 };
 
-	printf("Rescanning disks\n");
+	wire_log(WLOG_INFO, "Rescanning disks");
 
 	ret = glob("/dev/sg*", GLOB_NOSORT, NULL, &globbuf);
 	if (ret != 0) {
-		printf("Glob had an error finding scsi generic devices, ret=%d\n", ret);
+		wire_log(WLOG_INFO, "Glob had an error finding scsi generic devices, ret=%d", ret);
 		return;
 	}
 
-	printf("Found %d devices\n", (int)globbuf.gl_pathc);
+	wire_log(WLOG_INFO, "Found %d devices", (int)globbuf.gl_pathc);
 
 	int glob_idx;
 
 	for (glob_idx = 0; glob_idx < globbuf.gl_pathc; glob_idx++) {
 		char *dev = globbuf.gl_pathv[glob_idx];
-		printf("\tDevice: %s - ", dev);
 
 		if (disk_manager_is_active(dev)) {
-			printf("already known\n");
+			wire_log(WLOG_INFO, "Device: %s - already known", dev);
 			continue;
 		}
 
 		disk_scanner_t disk_scan;
 		bool success = disk_scanner_inquiry(&disk_scan, dev);
 		if (!success) {
-			printf("Error while scanning device %s\n", disk_scan.sg_path);
+			wire_log(WLOG_INFO, "Device: %s - Error while scanning device %s", dev, disk_scan.sg_path);
 		} else {
 			disk_mgr_scan_done(&disk_scan);
 		}
@@ -493,7 +493,7 @@ static int timer_monotonic(int msecs, wire_fd_state_t *fd_state)
 {
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC|TFD_NONBLOCK);
 	if (fd < 0) {
-		printf("Failed to setup timerfd: %m\n");
+		wire_log(WLOG_INFO, "Failed to setup timerfd: %m");
 		return -1;
 	}
 
@@ -551,7 +551,7 @@ static void task_tur(void *arg)
 	wire_wait_list_t wait_list;
 
 	if (timer_monotonic(1000, &fd_state) < 0) {
-		printf("Failed to setup tur timer\n");
+		wire_log(WLOG_INFO, "Failed to setup tur timer");
 		return;
 	}
 
@@ -570,7 +570,7 @@ static void task_tur(void *arg)
 
 		int ret = timer_read(&fd_state);
 		if (ret < 0) {
-			printf("Error reading timer, shutting down tur timer\n");
+			wire_log(WLOG_INFO, "Error reading timer, shutting down tur timer");
 			break;
 		} else if (ret > 0) {
 			int disk_idx;
@@ -590,7 +590,7 @@ static void task_five_min_timer(void *arg)
 	wire_wait_list_t wait_list;
 
 	if (timer_monotonic(5*60*1000, &fd_state) < 0) {
-		printf("Failed to setup five min timer\n");
+		wire_log(WLOG_INFO, "Failed to setup five min timer");
 		return;
 	}
 
@@ -610,7 +610,7 @@ static void task_five_min_timer(void *arg)
 
 		int ret = timer_read(&fd_state);
 		if (ret < 0) {
-			printf("Error reading timer, shutting down five min timer\n");
+			wire_log(WLOG_INFO, "Error reading timer, shutting down five min timer");
 			break;
 		} else if (ret == 0) {
 			continue;
@@ -643,19 +643,19 @@ static bool disk_manager_load_latency(latency_t *latency, unsigned char *buf, ui
 
     /* Read the latency part */
     if (*offset+4 > buf_size) {
-        printf("Not enough data in the file to read the latency size, offset=%u size=%u\n", *offset, buf_size);
+        wire_log(WLOG_INFO, "Not enough data in the file to read the latency size, offset=%u size=%u", *offset, buf_size);
         return false;
     }
 
     item_size = ntohl(*(uint32_t*)(buf + *offset));
     *offset += 4;
     if (*offset + item_size > buf_size) {
-        printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", *offset, item_size, buf_size);
+        wire_log(WLOG_INFO, "Not enough data in the file to finish reading, offset=%u item_size=%u size=%u", *offset, item_size, buf_size);
         return false;
     }
     latency_pb = disksurvey__latency__unpack(NULL, item_size, buf + *offset);
     if (!latency_pb) {
-        printf("Failed to unpack disk survey latency data\n");
+        wire_log(WLOG_INFO, "Failed to unpack disk survey latency data");
         return false;
     }
     *offset += item_size;
@@ -704,12 +704,12 @@ static bool disk_manager_load_disk_info(disk_info_t *disk_info, unsigned char *b
     item_size = ntohl(*(uint32_t*)(buf + *offset));
     *offset += 4;
     if (*offset + item_size > buf_size) {
-        printf("Not enough data in the file to finish reading, offset=%u item_size=%u size=%u\n", *offset, item_size, buf_size);
+        wire_log(WLOG_INFO, "Not enough data in the file to finish reading, offset=%u item_size=%u size=%u", *offset, item_size, buf_size);
         return false;
     }
     disk_info_pb = disksurvey__disk_info__unpack(NULL, item_size, buf + *offset);
     if (!disk_info_pb) {
-        printf("Failed to unpack disk survey disk info data\n");
+        wire_log(WLOG_INFO, "Failed to unpack disk survey disk info data");
         return false;
     }
     *offset += item_size;
@@ -724,7 +724,7 @@ static bool disk_manager_load_disk_info(disk_info_t *disk_info, unsigned char *b
         disk_info->device_type = 0;
 
     if (disk_info_pb->ata && disk_info_pb->sas) {
-        printf("A disk can't be both ATA and SAS at the same time, skipping\n");
+        wire_log(WLOG_INFO, "A disk can't be both ATA and SAS at the same time, skipping");
         bad_disk = true;
     } else if (disk_info_pb->ata) {
         disk_info->disk_type = DISK_TYPE_ATA;
@@ -735,7 +735,7 @@ static bool disk_manager_load_disk_info(disk_info_t *disk_info, unsigned char *b
         disk_info->sas.smart_asc = disk_info_pb->sas->smart_asc;
         disk_info->sas.smart_ascq = disk_info_pb->sas->smart_ascq;
     } else {
-        printf("Not an ATA nor SAS disk, skipping\n");
+        wire_log(WLOG_INFO, "Not an ATA nor SAS disk, skipping");
         bad_disk = true;
     }
 
@@ -748,31 +748,31 @@ static void disk_manager_load_fd(int fd)
     struct stat statbuf;
     int ret = fstat(fd, &statbuf);
     if (ret < 0) {
-        printf("Failed to stat file: %m\n");
+        wire_log(WLOG_INFO, "Failed to stat file: %m");
         close(fd);
         return;
     }
 
     if (statbuf.st_size < 4) {
-        printf("Not enough size to include any useful data, ignore it\n");
+        wire_log(WLOG_INFO, "Not enough size to include any useful data, ignore it");
         close(fd);
         return;
     }
 
     unsigned char *buf = mmap(NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE|MAP_POPULATE, fd, 0);
     if (!buf) {
-        printf("Failed to map data: %m\n");
+        wire_log(WLOG_INFO, "Failed to map data: %m");
         close(fd);
         return;
     }
 
 	uint32_t version = ntohl(*(uint32_t*)buf);
 	if (version != 2) {
-		printf("Unknown version of state file, got: %d expected: %d\n", version, 1);
+		wire_log(WLOG_INFO, "Unknown version of state file, got: %d expected: %d", version, 1);
 		goto Exit;
 	}
 
-    printf("Loading disk data version %u\n", version);
+    wire_log(WLOG_INFO, "Loading disk data version %u", version);
 
     uint32_t offset = sizeof(version);
 	int i;
@@ -787,7 +787,7 @@ static void disk_manager_load_fd(int fd)
             goto Exit;
 
         /* Both parts loaded, add the disk */
-		printf("Loaded disk data\n");
+		wire_log(WLOG_INFO, "Loaded disk data");
 		mgr.disk_list[i].disk.disk_info = disk_info;
         mgr.disk_list[i].disk.latency = latency;
 		disk_list_append(i, &mgr.dead_head);
@@ -802,7 +802,7 @@ static void disk_manager_load(void)
 {
 	int fd = open(mgr.state_file_name, O_RDONLY);
 	if (fd < 0) {
-		printf("Failed to open state data: %m\n");
+		wire_log(WLOG_INFO, "Failed to open state data: %m");
 		return;
 	}
 
@@ -841,7 +841,7 @@ static void stop_task(void *arg)
 	int disk_idx;
 	for_active_disks(disk_idx) {
 		disk_t *disk = &m->disk_list[disk_idx].disk;
-		printf("Trying to stop disk %d: %p\n", disk_idx, disk);
+		wire_log(WLOG_INFO, "Trying to stop disk %d: %p", disk_idx, disk);
 		disk_stop(disk);
 	}
 
@@ -853,7 +853,7 @@ static void stop_task(void *arg)
 		wire_fd_wait_msec(1000);
 	}
 
-	printf("No more live disks, stopping\n");
+	wire_log(WLOG_INFO, "No more live disks, stopping");
 	disk_manager_save_state_nofork();
 }
 
