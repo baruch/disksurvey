@@ -1,6 +1,7 @@
 #include "sg.h"
 #include "monoclock.h"
 #include "wire_fd.h"
+#include "wire_log.h"
 
 #include <memory.h>
 #include <sys/types.h>
@@ -21,9 +22,9 @@ static int submit_request(sg_t *sg, sg_request_t *request)
 	}
 
 	if (errno == EWOULDBLOCK || errno == EAGAIN) {
-		printf("Failed to submit io, would block.\n");
+		wire_log(WLOG_WARNING, "Failed to submit io, would block.");
 	} else {
-		printf("Failed to submit io: %m\n");
+		wire_log(WLOG_ERR, "Failed to submit io: %m\n");
 	}
 	return -1;
 }
@@ -90,7 +91,7 @@ int sg_request_wait_response(sg_t *sg, sg_request_t *req)
 		int ret = read(sg->sg_fd, &hdr, sizeof(hdr));
 		if (ret == sizeof(hdr)) {
 			if (req != hdr.usr_ptr) {
-				printf("Unknown response received, waiting for the real one!\n");
+				wire_log(WLOG_WARNING, "Unknown response received, waiting for the real one!");
 				continue;
 			}
 			req->end = monoclock_get();
@@ -101,11 +102,11 @@ int sg_request_wait_response(sg_t *sg, sg_request_t *req)
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				continue;
 			else {
-				printf("Error while reading the data, bailing out: %m\n");
+				wire_log(WLOG_WARNING, "Error while reading the data, bailing out: %m");
 				break;
 			}
 		} else {
-			printf("Didn't read the full data only read %d bytes, weird!\n", ret);
+			wire_log(WLOG_ERR, "Didn't read the full data only read %d bytes, weird!", ret);
 		}
 	}
 
