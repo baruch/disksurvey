@@ -357,7 +357,6 @@ static void web_accept(void *arg)
 		unsigned web_id = 0;
         wire_fd_state_t fd_state;
         wire_fd_mode_init(&fd_state, fd);
-        wire_fd_mode_read(&fd_state);
 
 		wire_wait_list_t wait_list;
 		wire_wait_list_init(&wait_list);
@@ -368,6 +367,8 @@ static void web_accept(void *arg)
 		printf("listening on port %d\n", port);
 
         while (1) {
+			    wire_fd_mode_read(&fd_state);
+				wire_wait_reset(&fd_state.wait);
                 wire_list_wait(&wait_list);
 
 				if (web.close_wait.triggered) {
