@@ -14,6 +14,16 @@
 
 typedef bool (*parser_cb_t)(disk_scanner_t *disk);
 
+static char nibble_to_char(unsigned char ch)
+{
+	if (ch < 10)
+		return '0' + ch;
+	else if (ch < 16)
+		return 'A' + ch - 10;
+	else
+		return '*';
+}
+
 static bool sg_request_data(disk_scanner_t *disk, unsigned char *cdb, int cdb_len)
 {
 	if (sg_request_submit(&disk->sg, &disk->data_request, cdb, cdb_len, SG_DXFER_FROM_DEV, disk->data_buf, sizeof(disk->data_buf), DEF_TIMEOUT) < 0) {
@@ -27,7 +37,27 @@ static bool sg_request_data(disk_scanner_t *disk, unsigned char *cdb, int cdb_le
 	}
 
 	if (disk->data_request.hdr.status != 0) {
-		wire_log(WLOG_INFO, "Request failed");
+		wire_log(WLOG_INFO, "Request failed, status=%d", disk->data_request.hdr.status);
+		if (disk->data_request.hdr.sb_len_wr) {
+			char sense_text[64*3];
+			unsigned char i;
+			int j;
+			for (i = 0, j = 0; i < disk->data_request.hdr.sb_len_wr && i < 64; i++) {
+				if (j > 0)
+					sense_text[j++] = ' ';
+				sense_text[j++] = nibble_to_char((disk->data_request.hdr.sbp[i] & 0xF0) >> 4);
+				sense_text[j++] = nibble_to_char((disk->data_request.hdr.sbp[i] & 0x0F));
+			}
+			sense_text[j] = 0;
+
+			wire_log(WLOG_INFO, "Sense buffer: %s", sense_text);
+
+			sense_info_t sense_info;
+			bool parsed = scsi_parse_sense(disk->data_request.hdr.sbp, disk->data_request.hdr.sb_len_wr, &sense_info);
+			if (parsed) {
+				wire_log(WLOG_INFO, "Sense info: %01X/%02X/%02X/%04X", sense_info.sense_key, sense_info.asc, sense_info.ascq, 0/*sense_info.vendor_unique_error*/);
+			}
+		}
 		return false;
 	}
 
