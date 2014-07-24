@@ -24,6 +24,31 @@ static char nibble_to_char(unsigned char ch)
 		return '*';
 }
 
+static void log_hex(const char *prefix, const unsigned char *buf, int buf_len)
+{
+	char hex[3*16];
+	int i, j;
+	int line = 1;
+
+	for (i = 0, j = 0; i < buf_len; i++) {
+		if (j > 0)
+			hex[j++] = ' ';
+		hex[j++] = nibble_to_char((buf[i] & 0xF0) >> 4);
+		hex[j++] = nibble_to_char((buf[i] & 0x0F));
+
+		if (j + 3 > sizeof(hex)) {
+			hex[j] = 0;
+			wire_log(WLOG_DEBUG, "%s:%d: %s", prefix, line++, hex);
+			j = 0;
+		}
+	}
+
+	if (j > 0) {
+		hex[j] = 0;
+		wire_log(WLOG_DEBUG, "%s:%d: %s", prefix, line++, hex);
+	}
+}
+
 static bool sg_request_data(disk_scanner_t *disk, unsigned char *cdb, int cdb_len)
 {
 	if (sg_request_submit(&disk->sg, &disk->data_request, cdb, cdb_len, SG_DXFER_FROM_DEV, disk->data_buf, sizeof(disk->data_buf), DEF_TIMEOUT) < 0) {
@@ -92,15 +117,18 @@ static bool inquiry_parse(disk_scanner_t *disk)
 {
 	sg_request_t *req = &disk->data_request;
 	wire_log(WLOG_INFO, "Got inquiry reply in %f msecs (%d in sg)", 1000.0*(req->end-req->start), req->hdr.duration);
+	wire_log(WLOG_DEBUG, "data buf size %u res %u data %u", sizeof(disk->data_buf), req->hdr.resid, sizeof(disk->data_buf) - req->hdr.resid);
+	log_hex("data buffer", (unsigned char *)disk->data_buf, sizeof(disk->data_buf) - req->hdr.resid);
 
-	bool success = parse_inquiry(disk->data_buf, sizeof(disk->data_buf) - req->hdr.resid, &disk->disk_info.device_type, disk->disk_info.vendor,
+	bool success = parse_inquiry((unsigned char *)disk->data_buf, sizeof(disk->data_buf) - req->hdr.resid, &disk->disk_info.device_type, disk->disk_info.vendor,
 	              disk->disk_info.model, disk->disk_info.fw_rev, disk->disk_info.serial);
 
-    wire_log(WLOG_INFO, "Disk identified by INQUIRY as vendor='%s' model='%s' serial='%s' fw_rev='%s'",
+    wire_log(WLOG_INFO, "Disk identified by INQUIRY as vendor='%s' model='%s' serial='%s' fw_rev='%s' success=%d",
            disk->disk_info.vendor,
            disk->disk_info.model,
            disk->disk_info.serial,
-           disk->disk_info.fw_rev);
+           disk->disk_info.fw_rev,
+		   success);
 	return success;
 }
 
@@ -119,10 +147,13 @@ bool disk_scanner_inquiry(disk_scanner_t *disk, const char *sg_dev)
 	unsigned char cdb[32];
 	int cdb_len = cdb_inquiry_simple(cdb, sizeof(disk->data_buf));
 	success = sg_request_data(disk, cdb, cdb_len);
-	if (!success)
+	if (!success) {
+		wire_log(WLOG_INFO, "Failed to request INQUIRY on %s", sg_dev);
 		goto exit;
+	}
 
 	if (!inquiry_parse(disk)) {
+		wire_log(WLOG_INFO, "Failed to parse inquiry data on %s", sg_dev);
 		success = false;
 		goto exit;
 	}
