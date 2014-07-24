@@ -82,9 +82,9 @@ int sg_request_wait_response(sg_t *sg, sg_request_t *req)
 	wire_fd_state_t fd_state;
 
 	wire_fd_mode_init(&fd_state, sg->sg_fd);
-	wire_fd_mode_read(&fd_state);
 
 	while (1) {
+		wire_fd_mode_read(&fd_state);
 		wire_fd_wait(&fd_state);
 
 		sg_io_hdr_t hdr;
