@@ -89,12 +89,12 @@ int sg_request_wait_response(sg_t *sg, sg_request_t *req)
 
 		sg_io_hdr_t hdr;
 		int ret = read(sg->sg_fd, &hdr, sizeof(hdr));
+		req->end = monoclock_get();
 		if (ret == sizeof(hdr)) {
 			if (req != hdr.usr_ptr) {
 				wire_log(WLOG_WARNING, "Unknown response received, waiting for the real one!");
 				continue;
 			}
-			req->end = monoclock_get();
 			req->hdr = hdr;
 			result = 0;
 			break;
