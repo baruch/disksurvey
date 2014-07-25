@@ -10,6 +10,7 @@
 #include "wire_stack.h"
 #include "wire_wait.h"
 #include "wire_log.h"
+#include "wire_io.h"
 
 #include <sys/timerfd.h>
 #include <errno.h>
@@ -541,7 +542,7 @@ static int timer_read(wire_fd_state_t *fd_state)
 static void timer_close(wire_fd_state_t *fd_state)
 {
 	wire_fd_mode_none(fd_state);
-	close(fd_state->fd);
+	wio_close(fd_state->fd);
 }
 
 static void task_tur(void *arg)

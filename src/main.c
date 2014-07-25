@@ -64,7 +64,7 @@ static void signal_task_run(void *arg)
 		s = read(fd, &fdsi, sizeof(struct signalfd_siginfo));
 		if (s != sizeof(struct signalfd_siginfo)) {
 			fprintf(stderr, "failed to read from signalfd %d: ret=%d errno=%d: %m\n", fd, (int)s, errno);
-			close(fd);
+			wio_close(fd);
 			return;
 		}
 
@@ -83,7 +83,7 @@ static void signal_task_run(void *arg)
 	sigprocmask(SIG_UNBLOCK, &mask, NULL);
 
 	wire_fd_mode_none(&fd_state);
-	close(fd);
+	wio_close(fd);
 	wire_log(WLOG_INFO, "signal thread exiting");
 }
 

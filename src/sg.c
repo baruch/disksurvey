@@ -2,6 +2,7 @@
 #include "monoclock.h"
 #include "wire_fd.h"
 #include "wire_log.h"
+#include "wire_io.h"
 
 #include <memory.h>
 #include <sys/types.h>
@@ -40,7 +41,7 @@ static void set_nonblock(int fd)
 
 bool sg_init(sg_t *sg, const char *sg_path)
 {
-	sg->sg_fd = open(sg_path, O_RDWR|O_CLOEXEC);
+	sg->sg_fd = wio_open(sg_path, O_RDWR|O_CLOEXEC, 0);
 	if (sg->sg_fd < 0)
 		return false;
 
@@ -51,7 +52,7 @@ bool sg_init(sg_t *sg, const char *sg_path)
 
 void sg_close(sg_t *sg)
 {
-	close(sg->sg_fd);
+	wio_close(sg->sg_fd);
 	sg->sg_fd = -1;
 }
 
