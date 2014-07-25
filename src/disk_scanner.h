@@ -17,7 +17,7 @@ struct disk_scanner_t {
 
 	sg_t sg;
 	sg_request_t data_request;
-	char data_buf[4096] __attribute__(( aligned(4096) ));
+	char data_buf[512] __attribute__(( aligned(4096) ));
 };
 
 bool disk_scanner_inquiry(disk_scanner_t *disk, const char *sg_dev);
