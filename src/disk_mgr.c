@@ -439,7 +439,7 @@ void disk_manager_rescan_internal(struct disk_mgr *m)
 
 	wire_log(WLOG_INFO, "Rescanning disks");
 
-	ret = glob("/dev/sg*", GLOB_NOSORT, NULL, &globbuf);
+	ret = wio_glob("/dev/sg*", GLOB_NOSORT, NULL, &globbuf);
 	if (ret != 0) {
 		wire_log(WLOG_INFO, "Glob had an error finding scsi generic devices, ret=%d", ret);
 		return;
@@ -465,6 +465,8 @@ void disk_manager_rescan_internal(struct disk_mgr *m)
 			disk_mgr_scan_done(&disk_scan);
 		}
 	}
+
+	wio_globfree(&globbuf);
 }
 
 void disk_manager_rescan(void)
