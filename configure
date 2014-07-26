@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 srcs = [
-        'disk', 'disk_mgr', 'disk_scanner', 'latency', 'main', 'sg', 'sha1', 'system_id', 'web_app', 'src/protocol.pb-c', 'monoclock'
+        'disk', 'disk_mgr', 'disk_scanner', 'latency', 'timer_bus', 'main', 'sg', 'sha1', 'system_id', 'web_app', 'src/protocol.pb-c', 'monoclock'
 ]
 
 test_srcs = {

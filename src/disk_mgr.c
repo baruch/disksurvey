@@ -4,6 +4,7 @@
 #include "util.h"
 #include "system_id.h"
 #include "protocol.pb-c.h"
+#include "timer_bus.h"
 
 #include "wire.h"
 #include "wire_fd.h"
@@ -12,8 +13,6 @@
 #include "wire_log.h"
 #include "wire_io.h"
 
-#include <sys/timerfd.h>
-#include <errno.h>
 #include <arpa/inet.h>
 #include <sys/mman.h>
 #include <ctype.h>
@@ -38,9 +37,8 @@ struct disk_state {
 };
 
 struct disk_mgr {
+	timer_bus_t timer_bus;
 	wire_wait_t wait_rescan;
-	wire_wait_t wait_tur;
-	wire_wait_t wait_five_min;
 	wire_t task_rescan;
 	wire_t task_tur;
 	wire_t task_five_min_timer;
@@ -492,133 +490,23 @@ static void task_rescan(void *arg)
 	}
 }
 
-static int timer_monotonic(int msecs, wire_fd_state_t *fd_state)
-{
-	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC|TFD_NONBLOCK);
-	if (fd < 0) {
-		wire_log(WLOG_INFO, "Failed to setup timerfd: %m");
-		return -1;
-	}
-
-	struct itimerspec timer = {
-		.it_value = { .tv_sec = msecs / 1000, .tv_nsec = (msecs % 1000) * 1000000 },
-	};
-	timer.it_interval = timer.it_value;
-
-	int ret = timerfd_settime(fd, 0, &timer, NULL);
-	if (ret < 0) {
-		close(fd);
-		return -1;
-	}
-
-	wire_fd_mode_init(fd_state, fd);
-	wire_fd_mode_read(fd_state);
-
-	return fd;
-}
-
-static int timer_read(wire_fd_state_t *fd_state)
-{
-	if (!fd_state->wait.triggered)
-		return 0;
-
-	wire_wait_reset(&fd_state->wait);
-
-	uint64_t timer_val = 0;
-	int ret = read(fd_state->fd, &timer_val, sizeof(timer_val));
-	if (ret < (int)sizeof(timer_val)) {
-		if (errno == EAGAIN)
-			return 0; // Wake up not timer related
-		perror("Error reading from timerfd");
-		return -1;
-	}
-
-	if (timer_val > 0) {
-		ret = 0;
-		return 1;
-	}
-
-	return 0;
-}
-
-static void timer_close(wire_fd_state_t *fd_state)
-{
-	wire_fd_mode_none(fd_state);
-	wio_close(fd_state->fd);
-}
-
 static void task_tur(void *arg)
 {
 	struct disk_mgr *m = arg;
-	wire_fd_state_t fd_state;
-	wire_wait_list_t wait_list;
 
-	if (timer_monotonic(1000, &fd_state) < 0) {
-		wire_log(WLOG_INFO, "Failed to setup tur timer");
-		return;
-	}
-
-	wire_wait_init(&m->wait_tur);
-
-	wire_wait_list_init(&wait_list);
-	wire_wait_chain(&wait_list, &fd_state.wait);
-	wire_wait_chain(&wait_list, &m->wait_tur);
-	while (m->active) {
-		wire_list_wait(&wait_list);
-
-		if (m->wait_tur.triggered) {
-			wire_wait_reset(&m->wait_tur);
-			continue;
-		}
-
-		int ret = timer_read(&fd_state);
-		if (ret < 0) {
-			wire_log(WLOG_INFO, "Error reading timer, shutting down tur timer");
-			break;
-		} else if (ret > 0) {
-			int disk_idx;
-			for_active_disks(disk_idx) {
-				disk_tur(&mgr.disk_list[disk_idx].disk);
-			}
+	while (timer_bus_sleep(&m->timer_bus, 1) >= 0) {
+		int disk_idx;
+		for_active_disks(disk_idx) {
+			disk_tur(&mgr.disk_list[disk_idx].disk);
 		}
 	}
-
-	timer_close(&fd_state);
 }
 
 static void task_five_min_timer(void *arg)
 {
 	struct disk_mgr *m = arg;
-	wire_fd_state_t fd_state;
-	wire_wait_list_t wait_list;
 
-	if (timer_monotonic(5*60*1000, &fd_state) < 0) {
-		wire_log(WLOG_INFO, "Failed to setup five min timer");
-		return;
-	}
-
-	wire_wait_init(&m->wait_five_min);
-
-	wire_wait_list_init(&wait_list);
-	wire_wait_chain(&wait_list, &fd_state.wait);
-	wire_wait_chain(&wait_list, &m->wait_five_min);
-
-	while (m->active) {
-		wire_list_wait(&wait_list);
-
-		if (m->wait_five_min.triggered) {
-			wire_wait_reset(&m->wait_five_min);
-			continue;
-		}
-
-		int ret = timer_read(&fd_state);
-		if (ret < 0) {
-			wire_log(WLOG_INFO, "Error reading timer, shutting down five min timer");
-			break;
-		} else if (ret == 0) {
-			continue;
-		}
-
+	while (timer_bus_sleep(&m->timer_bus, 5*60)) {
 		int disk_idx;
 		for_active_disks(disk_idx) {
 			disk_tick(&mgr.disk_list[disk_idx].disk);
@@ -635,8 +523,6 @@ static void task_five_min_timer(void *arg)
 
 		disk_manager_rescan();
 	}
-
-	timer_close(&fd_state);
 }
 
 static bool disk_manager_load_latency(latency_t *latency, unsigned char *buf, uint32_t *offset, uint32_t buf_size)
@@ -831,6 +717,7 @@ void disk_manager_init(void)
 	disk_manager_load();
 	system_identifier_read(&mgr.system_id);
 
+	timer_bus_init(&mgr.timer_bus, 1000);
 	wire_init(&mgr.task_rescan, "disk rescan", task_rescan, &mgr, WIRE_STACK_ALLOC(64*1024));
 	wire_init(&mgr.task_tur, "tur timer", task_tur, &mgr, WIRE_STACK_ALLOC(4096));
 	wire_init(&mgr.task_five_min_timer, "five min timer", task_five_min_timer, &mgr, WIRE_STACK_ALLOC(4096));
@@ -866,8 +753,7 @@ void disk_manager_stop(void)
 
 	// Wake up the tasks so they will exit as they notice that the managr is not active anymore
 	wire_resume(&mgr.task_rescan);
-	wire_wait_resume(&mgr.wait_tur);
-	wire_wait_resume(&mgr.wait_five_min);
+	timer_bus_stop(&mgr.timer_bus);
 
 	// Now monitor the disks until they can all be stopped
 	wire_init(&mgr.task_stop, "stopper", stop_task, &mgr, WIRE_STACK_ALLOC(4096));
