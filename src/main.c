@@ -53,19 +53,19 @@ static void signal_task_run(void *arg)
 	}
 
 	wire_fd_mode_init(&fd_state, fd);
-	wire_fd_mode_read(&fd_state);
 
 	while (1) {
 		struct signalfd_siginfo fdsi;
 		ssize_t s;
 
+		wire_fd_mode_read(&fd_state);
 		wire_fd_wait(&fd_state);
 
 		s = read(fd, &fdsi, sizeof(struct signalfd_siginfo));
 		if (s != sizeof(struct signalfd_siginfo)) {
-			fprintf(stderr, "failed to read from signalfd %d: ret=%d errno=%d: %m\n", fd, (int)s, errno);
+			wire_log(WLOG_ERR, "failed to read from signalfd %d: ret=%d errno=%d: %m\n", fd, (int)s, errno);
 			wio_close(fd);
-			return;
+			break;
 		}
 
 		if (fdsi.ssi_signo == SIGINT || fdsi.ssi_signo == SIGTERM || fdsi.ssi_signo == SIGQUIT) {
