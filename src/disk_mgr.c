@@ -518,9 +518,6 @@ static void task_five_min_timer(void *arg)
 		// Save state after they did their work
 		disk_manager_save_state();
 
-		if (!m->active)
-			break;
-
 		disk_manager_rescan();
 	}
 }

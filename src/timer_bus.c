@@ -72,6 +72,7 @@ static void timer_bus_wire(void *arg)
 {
 	timer_bus_t *tbus = arg;
 	wire_fd_state_t fd_state;
+	struct list_head *next, *cur;
 
 	timer_monotonic(&fd_state, tbus->time_unit_msec);
 
@@ -80,7 +81,6 @@ static void timer_bus_wire(void *arg)
 		if (tbus->stop || ret < 0)
 			break;
 
-		struct list_head *next, *cur;
 		for (cur = tbus->sleepers.next, next = cur->next; cur != &tbus->sleepers; cur = next, next = cur->next) {
 			struct timer_bus_sleeper *sleeper = list_entry(cur, struct timer_bus_sleeper, list);
 			sleeper->units_left--;
@@ -91,7 +91,14 @@ static void timer_bus_wire(void *arg)
 		}
 	}
 
+	tbus->stop = -1;
 	timer_close(&fd_state);
+
+	for (cur = tbus->sleepers.next, next = cur->next; cur != &tbus->sleepers; cur = next, next = cur->next) {
+		struct timer_bus_sleeper *sleeper = list_entry(cur, struct timer_bus_sleeper, list);
+		list_del(cur);
+		wire_wait_resume(&sleeper->wait);
+	}
 }
 
 void timer_bus_init(timer_bus_t *tbus, unsigned time_unit_msec)
