@@ -13,6 +13,7 @@
 #include "wire_log.h"
 #include "macros.h"
 #include "http_parser.h"
+#include "wire_io.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -164,14 +165,14 @@ static int socket_setup(unsigned short port)
 	int ret = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
 	if (ret < 0) {
 		wire_log(WLOG_FATAL, "Failed to bind to socket: %m");
-		close(fd);
+		wio_close(fd);
 		return -1;
 	}
 
 	ret = listen(fd, 100);
 	if (ret < 0) {
 		wire_log(WLOG_FATAL, "failed to listen to port: %m");
-		close(fd);
+		wio_close(fd);
 		return -1;
 	}
 
@@ -291,7 +292,7 @@ static void web_run(void *arg)
 	} while (1);
 
 	wire_fd_mode_none(&d.fd_state);
-	close(d.fd);
+	wio_close(d.fd);
 }
 
 // ---
@@ -343,7 +344,7 @@ static void web_accept(void *arg)
         }
 
 		wire_fd_mode_none(&fd_state);
-		close(fd);
+		wio_close(fd);
 		wire_log(WLOG_INFO, "Web interface shutdown");
 }
 
