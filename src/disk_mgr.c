@@ -697,6 +697,20 @@ static void disk_manager_load(void)
 	close(fd);
 }
 
+static void disk_manager_init_wire(void *arg)
+{
+	UNUSED(arg);
+
+	disk_manager_load();
+	system_identifier_read(&mgr.system_id);
+
+	timer_bus_init(&mgr.timer_bus, 1000);
+	wire_init(&mgr.task_rescan, "disk rescan", task_rescan, &mgr, WIRE_STACK_ALLOC(64*1024));
+	wire_init(&mgr.task_tur, "tur timer", task_tur, &mgr, WIRE_STACK_ALLOC(4096));
+	wire_init(&mgr.task_five_min_timer, "five min timer", task_five_min_timer, &mgr, WIRE_STACK_ALLOC(4096));
+	wire_init(&mgr.task_dead_disk_reaper, "dead disk reaper", task_dead_disk_reaper, &mgr, WIRE_STACK_ALLOC(4096));
+}
+
 void disk_manager_init(void)
 {
 	// Initialize the disk list
@@ -710,15 +724,7 @@ void disk_manager_init(void)
 	mgr.active = 1;
 
 	wire_pool_init(&mgr.wire_pool, NULL, MAX_DISKS, 4096);
-
-	disk_manager_load();
-	system_identifier_read(&mgr.system_id);
-
-	timer_bus_init(&mgr.timer_bus, 1000);
-	wire_init(&mgr.task_rescan, "disk rescan", task_rescan, &mgr, WIRE_STACK_ALLOC(64*1024));
-	wire_init(&mgr.task_tur, "tur timer", task_tur, &mgr, WIRE_STACK_ALLOC(4096));
-	wire_init(&mgr.task_five_min_timer, "five min timer", task_five_min_timer, &mgr, WIRE_STACK_ALLOC(4096));
-	wire_init(&mgr.task_dead_disk_reaper, "dead disk reaper", task_dead_disk_reaper, &mgr, WIRE_STACK_ALLOC(4096));
+	wire_pool_alloc(&mgr.wire_pool, "disk mgr init", disk_manager_init_wire, NULL);
 }
 
 static void stop_task(void *arg)

@@ -1,5 +1,7 @@
 #include "system_id.h"
 
+#include "wire_io.h"
+
 #include "sha1.h"
 
 #include <memory.h>
@@ -36,12 +38,12 @@ static void dmidecode_read(const char *field_name, char *buf, int len)
 
     snprintf(cmd, sizeof(cmd), "dmidecode -s %s", field_name);
 
-    FILE *f = popen(cmd, "r");
+    FILE *f = wio_popen(cmd, "r");
     if (!f)
         return;
 
-    char *ret = fgets(buf, len, f);
-    fclose(f);
+    char *ret = wio_fgets(buf, len, f);
+    wio_pclose(f);
     
     if (ret == NULL)
         return;
@@ -85,16 +87,16 @@ static void mac_read(char *buf, int len)
 
     ifc.ifc_len = sizeof(data);
     ifc.ifc_buf = data;
-    if (ioctl(sock, SIOCGIFCONF, &ifc) == -1) { /* handle error */ }
+    if (wio_ioctl(sock, SIOCGIFCONF, &ifc) == -1) { /* handle error */ }
 
     struct ifreq* it = ifc.ifc_req;
     const struct ifreq* const end = it + (ifc.ifc_len / sizeof(struct ifreq));
 
     for (; it != end; ++it) {
         strcpy(ifr.ifr_name, it->ifr_name);
-        if (ioctl(sock, SIOCGIFFLAGS, &ifr) == 0) {
+        if (wio_ioctl(sock, SIOCGIFFLAGS, &ifr) == 0) {
             if (! (ifr.ifr_flags & IFF_LOOPBACK)) { // don't count loopback
-                if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+                if (wio_ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
                     success = 1;
                     break;
                 }
@@ -108,6 +110,8 @@ static void mac_read(char *buf, int len)
     } else {
         memset(buf, 0, len);
     }
+
+	wio_close(sock);
 }
 
 bool system_identifier_read(system_identifier_t *system_id)
