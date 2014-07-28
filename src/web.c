@@ -333,7 +333,7 @@ static void web_accept(void *arg)
                         if (!task) {
                                 wire_log(WLOG_NOTICE, "Web server is busy, sorry");
 								// TODO: Send something into the connection
-                                close(new_fd);
+                                wio_close(new_fd);
                         }
                 } else {
                         if (errno != EINTR && errno != EAGAIN) {
