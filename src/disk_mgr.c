@@ -512,7 +512,8 @@ static void task_five_min_timer(void *arg)
 			disk_tick(&mgr.disk_list[disk_idx].disk);
 		}
 
-		// Now let the disk wires do their tick work
+		// Now let the disk wires do their tick work, they switch data
+		// structures so we save an exact five minute bucket
 		wire_yield();
 
 		// Save state after they did their work
