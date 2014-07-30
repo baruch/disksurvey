@@ -632,23 +632,21 @@ static bool disk_manager_load_disk_info(disk_info_t *disk_info, unsigned char *b
 static void disk_manager_load_fd(int fd)
 {
     struct stat statbuf;
-    int ret = fstat(fd, &statbuf);
+
+    int ret = wio_fstat(fd, &statbuf);
     if (ret < 0) {
         wire_log(WLOG_INFO, "Failed to stat file: %m");
-        close(fd);
         return;
     }
 
     if (statbuf.st_size < 4) {
         wire_log(WLOG_INFO, "Not enough size to include any useful data, ignore it");
-        close(fd);
         return;
     }
 
-    unsigned char *buf = mmap(NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE|MAP_POPULATE, fd, 0);
+    unsigned char *buf = wio_mmap(NULL, statbuf.st_size, PROT_READ, MAP_PRIVATE|MAP_POPULATE, fd, 0);
     if (!buf) {
         wire_log(WLOG_INFO, "Failed to map data: %m");
-        close(fd);
         return;
     }
 
@@ -663,30 +661,33 @@ static void disk_manager_load_fd(int fd)
     uint32_t offset = sizeof(version);
 	int i;
 	for (i = 0; i < MAX_DISKS && offset < statbuf.st_size; i++) {
-		disk_info_t disk_info;
-		latency_t latency;
+		disk_info_t *disk_info = &mgr.disk_list[i].disk.disk_info;
+		latency_t *latency = &mgr.disk_list[i].disk.latency;
 
-        if (!disk_manager_load_disk_info(&disk_info, buf, &offset, statbuf.st_size))
+        if (!disk_manager_load_disk_info(disk_info, buf, &offset, statbuf.st_size)) {
+			memset(disk_info, 0, sizeof(*disk_info));
             goto Exit;
+		}
 
-        if (!disk_manager_load_latency(&latency, buf, &offset, statbuf.st_size))
+        if (!disk_manager_load_latency(latency, buf, &offset, statbuf.st_size)) {
+			memset(disk_info, 0, sizeof(*disk_info));
+			memset(latency, 0, sizeof(*latency));
             goto Exit;
+		}
 
         /* Both parts loaded, add the disk */
 		wire_log(WLOG_INFO, "Loaded disk data");
-		mgr.disk_list[i].disk.disk_info = disk_info;
-        mgr.disk_list[i].disk.latency = latency;
 		disk_list_append(i, &mgr.dead_head);
 		mgr.first_unused_entry = i+1;
 	}
 
 Exit:
-    munmap(buf, statbuf.st_size);
+    wio_munmap(buf, statbuf.st_size);
 }
 
 static void disk_manager_load(void)
 {
-	int fd = open(mgr.state_file_name, O_RDONLY);
+	int fd = wio_open(mgr.state_file_name, O_RDONLY, 0);
 	if (fd < 0) {
 		wire_log(WLOG_INFO, "Failed to open state data: %m");
 		return;
@@ -694,7 +695,7 @@ static void disk_manager_load(void)
 
     disk_manager_load_fd(fd);
 
-	close(fd);
+	wio_close(fd);
 }
 
 static void disk_manager_init_wire(void *arg)
