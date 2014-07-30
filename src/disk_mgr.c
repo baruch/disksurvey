@@ -421,7 +421,7 @@ void disk_manager_save_state(void)
 	if (pid == 0) {
 		/* Child, saves information */
 		disk_manager_save_state_nofork();
-		exit(0);
+		_exit(0);
 	} else if (pid == -1) {
 		/* Parent, error */
 		wire_log(WLOG_INFO, "Error forking to save state: %m");
