@@ -145,7 +145,7 @@ bool disk_scanner_inquiry(disk_scanner_t *disk, const char *sg_dev)
 	bool success;
 
 	unsigned char cdb[32];
-	int cdb_len = cdb_inquiry_simple(cdb, sizeof(disk->data_buf));
+	int cdb_len = cdb_inquiry_simple(cdb, 96);
 	success = sg_request_data(disk, cdb, cdb_len);
 	if (!success) {
 		wire_log(WLOG_INFO, "Failed to request INQUIRY on %s", sg_dev);
